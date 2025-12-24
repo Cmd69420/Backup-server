@@ -249,13 +249,118 @@ export const createClient = async (req, res) => {
   });
 };
 
+// controllers/clients.controller.js
+// ✅ SIMPLIFIED VERSION - Smart auto-detection
+
 export const getClients = async (req, res) => {
-  const { status, search, page = 1, limit = 100 } = req.query;
+  const { 
+    status, 
+    search, 
+    page = 1, 
+    limit = 100, 
+    searchMode = 'local'
+  } = req.query;
+  
   const offset = (page - 1) * limit;
 
-  console.log(`👤 Fetching clients for user: ${req.user.id}`);
+  console.log(`👤 Fetching clients for user: ${req.user.id} | Mode: ${searchMode} | Search: ${search}`);
 
+  // ✅ REMOTE MODE - Smart search with auto-detection
+  if (searchMode === 'remote') {
+    console.log(`🌐 Remote search mode`);
+
+    let query = `
+      SELECT *
+      FROM clients
+      WHERE (created_by IS NULL OR created_by = $1)
+    `;
+    const params = [req.user.id];
+    let paramCount = 1;
+
+    // ✅ Smart detection: Pincode (numbers only) vs Location/Name (has text)
+    if (search && search.trim()) {
+      paramCount++;
+      
+      // Check if search is all numbers (pincode)
+      if (/^\d+$/.test(search.trim())) {
+        console.log(`🔢 Detected pincode search: ${search}`);
+        query += ` AND pincode = $${paramCount}`;
+        params.push(search.trim());
+      } else {
+        console.log(`📝 Detected text search: ${search}`);
+        // Search in name, address (city/state), email, phone
+        query += ` AND (
+          name ILIKE $${paramCount} OR 
+          address ILIKE $${paramCount} OR
+          email ILIKE $${paramCount} OR
+          phone ILIKE $${paramCount}
+        )`;
+        params.push(`%${search.trim()}%`);
+      }
+    }
+
+    if (status) {
+      paramCount++;
+      query += ` AND status = $${paramCount}`;
+      params.push(status);
+    }
+
+    // ✅ Return clients WITH coordinates for distance sorting on client-side
+    query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Count query
+    let countQuery = "SELECT COUNT(*) FROM clients WHERE (created_by IS NULL OR created_by = $1)";
+    const countParams = [req.user.id];
+    let countParamIndex = 1;
+
+    if (search && search.trim()) {
+      countParamIndex++;
+      if (/^\d+$/.test(search.trim())) {
+        countQuery += ` AND pincode = $${countParamIndex}`;
+        countParams.push(search.trim());
+      } else {
+        countQuery += ` AND (
+          name ILIKE $${countParamIndex} OR 
+          address ILIKE $${countParamIndex} OR
+          email ILIKE $${countParamIndex} OR
+          phone ILIKE $${countParamIndex}
+        )`;
+        countParams.push(`%${search.trim()}%`);
+      }
+    }
+
+    if (status) {
+      countParamIndex++;
+      countQuery += ` AND status = $${countParamIndex}`;
+      countParams.push(status);
+    }
+
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].count);
+
+    console.log(`✅ Remote search found ${result.rows.length} clients`);
+
+    return res.json({
+      clients: result.rows,
+      userPincode: null,
+      filteredByPincode: false,
+      searchMode: 'remote',
+      searchType: search && /^\d+$/.test(search.trim()) ? 'pincode' : 'text',
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  }
+
+  // ✅ LOCAL MODE - Filter by user's pincode
   const userPincode = (await pool.query("SELECT pincode FROM users WHERE id = $1", [req.user.id])).rows[0]?.pincode;
+  
   if (!userPincode) {
     return res.status(400).json({ 
       error: "NoPincodeFound",
@@ -263,7 +368,7 @@ export const getClients = async (req, res) => {
     });
   }
 
-  console.log(`📍 Filtering clients by pincode: ${userPincode}`);
+  console.log(`📍 Local search mode - filtering by pincode: ${userPincode}`);
 
   let query = `
     SELECT *
@@ -286,12 +391,12 @@ export const getClients = async (req, res) => {
     params.push(`%${search}%`);
   }
 
+  // ✅ Return WITH coordinates for distance sorting on client-side
   query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
   params.push(parseInt(limit), parseInt(offset));
 
   const result = await pool.query(query, params);
 
-  // Build count query with same filters
   let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND (created_by IS NULL OR created_by = $2)";
   const countParams = [userPincode, req.user.id];
   let countParamIndex = 2;
@@ -311,12 +416,13 @@ export const getClients = async (req, res) => {
   const countResult = await pool.query(countQuery, countParams);
   const total = parseInt(countResult.rows[0].count);
 
-  console.log(`✅ Found ${result.rows.length} clients in pincode ${userPincode}`);
+  console.log(`✅ Local search found ${result.rows.length} clients in pincode ${userPincode}`);
 
   res.json({
     clients: result.rows,
     userPincode: userPincode,
     filteredByPincode: true,
+    searchMode: 'local',
     pagination: {
       page: parseInt(page),
       limit: parseInt(limit),
@@ -325,6 +431,7 @@ export const getClients = async (req, res) => {
     },
   });
 };
+
 export const getClientById = async (req, res) => {
   const result = await pool.query(
     "SELECT * FROM clients WHERE id = $1",

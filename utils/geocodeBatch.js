@@ -1,40 +1,57 @@
 // ============================================
 // ROBUST GEOCODING WITH MULTIPLE FALLBACKS
-// Replace utils/geocodeBatch.js with this improved version
 // ============================================
 
 import { pool } from "../db.js";
+import { GOOGLE_MAPS_API_KEY } from "../config/constants.js";
 
-/**
- * Background job to geocode clients missing location data
- * Uses multiple strategies to maximize success rate
- */
+let isGeocoding = false;
+
 export async function startBackgroundGeocode() {
+  if (isGeocoding) {
+    console.log("⚠️ Geocoding already in progress, skipping...");
+    return;
+  }
+
+  if (!GOOGLE_MAPS_API_KEY) {
+    console.log("⚠️ No Google Maps API key found, skipping geocoding");
+    return;
+  }
+
   console.log("🌍 Starting intelligent background geocoding...");
   
-  geocodeClientsInBackground().catch(err => {
-    console.error("❌ Background geocoding job failed:", err);
+  setImmediate(() => {
+    geocodeClientsInBackground().catch(err => {
+      console.error("❌ Background geocoding job failed:", err);
+      isGeocoding = false;
+    });
   });
 }
 
 async function geocodeClientsInBackground() {
+  if (isGeocoding) return;
+  isGeocoding = true;
+
   const startTime = Date.now();
   let processed = 0;
   let updated = 0;
   let failed = 0;
+  let skippedForeign = 0;
   const failures = [];
 
   try {
-    // Find clients missing lat/lon
+    // Find clients missing lat/lon (ONLY Indian addresses)
     const result = await pool.query(`
       SELECT id, name, address, pincode
       FROM clients
       WHERE (latitude IS NULL OR longitude IS NULL)
         AND (address IS NOT NULL OR pincode IS NOT NULL)
+        AND (pincode IS NULL OR pincode ~ '^[1-9][0-9]{5}$')
       ORDER BY 
         CASE 
-          WHEN pincode IS NOT NULL THEN 1  -- Prioritize clients with pincode
-          ELSE 2 
+          WHEN pincode IS NOT NULL AND pincode ~ '^[1-9][0-9]{5}$' THEN 1
+          WHEN address ~ '[1-9][0-9]{5}' THEN 2
+          ELSE 3 
         END,
         id DESC
       LIMIT 1000
@@ -44,20 +61,29 @@ async function geocodeClientsInBackground() {
     
     if (clientsToGeocode.length === 0) {
       console.log("✅ No clients need geocoding");
+      isGeocoding = false;
       return;
     }
 
-    console.log(`📍 Found ${clientsToGeocode.length} clients needing geocoding`);
+    console.log(`🔍 Found ${clientsToGeocode.length} clients needing geocoding\n`);
 
-    // Process in smaller batches with rate limiting
     const BATCH_SIZE = 3;
-    const DELAY_BETWEEN_BATCHES = 1500; // 1.5 seconds
+    const DELAY_BETWEEN_BATCHES = 1500;
     
     for (let i = 0; i < clientsToGeocode.length; i += BATCH_SIZE) {
       const batch = clientsToGeocode.slice(i, i + BATCH_SIZE);
       
-      // Process batch sequentially to avoid rate limits
       for (const client of batch) {
+        // Validate pincode is Indian
+        const isIndianPincode = !client.pincode || /^[1-9][0-9]{5}$/.test(client.pincode);
+        
+        if (!isIndianPincode) {
+          skippedForeign++;
+          console.log(`   ⏭️  [${processed + 1}/${clientsToGeocode.length}] ${client.name} - Foreign address`);
+          processed++;
+          continue;
+        }
+
         const result = await geocodeSingleClientWithStrategies(client);
         
         processed++;
@@ -77,15 +103,12 @@ async function geocodeClientsInBackground() {
           console.log(`   ❌ [${processed}/${clientsToGeocode.length}] ${client.name} → ${result.error}`);
         }
         
-        // Small delay between individual requests
         await sleep(300);
       }
       
-      // Log progress every batch
       const progress = ((processed / clientsToGeocode.length) * 100).toFixed(1);
-      console.log(`\n📊 Progress: ${progress}% | Updated: ${updated} | Failed: ${failed}\n`);
+      console.log(`\n📊 Progress: ${progress}% | Updated: ${updated} | Failed: ${failed} | Skipped: ${skippedForeign}\n`);
       
-      // Longer delay between batches
       if (i + BATCH_SIZE < clientsToGeocode.length) {
         await sleep(DELAY_BETWEEN_BATCHES);
       }
@@ -96,20 +119,21 @@ async function geocodeClientsInBackground() {
     console.log(`   📊 Total: ${processed}`);
     console.log(`   ✅ Success: ${updated} (${((updated/processed)*100).toFixed(1)}%)`);
     console.log(`   ❌ Failed: ${failed} (${((failed/processed)*100).toFixed(1)}%)`);
+    console.log(`   ⏭️  Skipped (foreign): ${skippedForeign}`);
 
-    // Log failed addresses for manual review
     if (failures.length > 0) {
       console.log(`\n⚠️ Failed addresses (sample):`);
       failures.slice(0, 10).forEach(f => {
         console.log(`   - ${f.name}: ${f.address?.substring(0, 50)}... (PIN: ${f.pincode || 'N/A'})`);
       });
       
-      // Save failures to database for later retry
       await saveFailedGeocodingAttempts(failures);
     }
 
   } catch (error) {
     console.error("❌ Background geocoding error:", error);
+  } finally {
+    isGeocoding = false;
   }
 }
 
@@ -117,52 +141,61 @@ async function geocodeClientsInBackground() {
  * Try multiple geocoding strategies in order of reliability
  */
 async function geocodeSingleClientWithStrategies(client) {
-  const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
-  
   if (!GOOGLE_MAPS_API_KEY) {
     return { success: false, error: "No API key configured" };
   }
 
-  // Extract pincode from address if not present
-  const pincode = client.pincode || extractPincodeFromAddress(client.address);
+  // Extract and validate pincode
+  let pincode = client.pincode || extractPincodeFromAddress(client.address);
+  
+  // Validate pincode is Indian format
+  if (pincode && !/^[1-9][0-9]{5}$/.test(pincode)) {
+    pincode = null;
+  }
 
   // =============================================
-  // STRATEGY 1: PINCODE ONLY (Highest Success Rate)
+  // STRATEGY 1: FULL ADDRESS (Most Accurate)
   // =============================================
-  if (pincode) {
-    const result = await tryGeocode(pincode, GOOGLE_MAPS_API_KEY);
+  if (client.address && client.address.length > 10) {
+    const fullAddress = pincode 
+      ? `${client.address}, ${pincode}, India`
+      : `${client.address}, India`;
+      
+    const result = await tryGeocode(fullAddress);
     if (result.success) {
-      await updateClientLocation(client.id, result.latitude, result.longitude, pincode);
-      return { success: true, strategy: "Pincode Only", ...result };
+      const finalPincode = result.pincode || pincode;
+      await updateClientLocation(client.id, result.latitude, result.longitude, finalPincode);
+      return { success: true, strategy: "Full Address", ...result };
     }
   }
 
   // =============================================
-  // STRATEGY 2: CITY + PINCODE
+  // STRATEGY 2: SIMPLIFIED ADDRESS
   // =============================================
-  if (client.address && pincode) {
-    const city = extractCityFromAddress(client.address);
-    if (city) {
-      const cityPinQuery = `${city}, ${pincode}, India`;
-      const result = await tryGeocode(cityPinQuery, GOOGLE_MAPS_API_KEY);
+  if (client.address) {
+    const simplified = simplifyAddress(client.address);
+    if (simplified && simplified !== client.address) {
+      const query = pincode ? `${simplified}, ${pincode}, India` : `${simplified}, India`;
+      const result = await tryGeocode(query);
       if (result.success) {
-        await updateClientLocation(client.id, result.latitude, result.longitude, pincode);
-        return { success: true, strategy: "City + Pincode", ...result };
+        const finalPincode = result.pincode || pincode;
+        await updateClientLocation(client.id, result.latitude, result.longitude, finalPincode);
+        return { success: true, strategy: "Simplified Address", ...result };
       }
     }
   }
 
   // =============================================
-  // STRATEGY 3: SIMPLIFIED ADDRESS
+  // STRATEGY 3: CITY + PINCODE
   // =============================================
-  if (client.address) {
-    const simplified = simplifyAddress(client.address);
-    if (simplified) {
-      const result = await tryGeocode(simplified, GOOGLE_MAPS_API_KEY);
+  if (client.address && pincode) {
+    const city = extractCityFromAddress(client.address);
+    if (city) {
+      const cityPinQuery = `${city}, ${pincode}, India`;
+      const result = await tryGeocode(cityPinQuery);
       if (result.success) {
-        const finalPincode = result.pincode || pincode;
-        await updateClientLocation(client.id, result.latitude, result.longitude, finalPincode);
-        return { success: true, strategy: "Simplified Address", ...result };
+        await updateClientLocation(client.id, result.latitude, result.longitude, pincode);
+        return { success: true, strategy: "City + Pincode", ...result };
       }
     }
   }
@@ -173,8 +206,8 @@ async function geocodeSingleClientWithStrategies(client) {
   if (client.address && pincode) {
     const area = extractAreaFromAddress(client.address);
     if (area) {
-      const areaPinQuery = `${area}, ${pincode}`;
-      const result = await tryGeocode(areaPinQuery, GOOGLE_MAPS_API_KEY);
+      const areaPinQuery = `${area}, ${pincode}, India`;
+      const result = await tryGeocode(areaPinQuery);
       if (result.success) {
         await updateClientLocation(client.id, result.latitude, result.longitude, pincode);
         return { success: true, strategy: "Area + Pincode", ...result };
@@ -183,15 +216,13 @@ async function geocodeSingleClientWithStrategies(client) {
   }
 
   // =============================================
-  // STRATEGY 5: FULL ADDRESS (Last Resort)
+  // STRATEGY 5: PINCODE ONLY (Fallback)
   // =============================================
-  if (client.address) {
-    const fullAddress = `${client.address}${pincode ? ', ' + pincode : ''}, India`;
-    const result = await tryGeocode(fullAddress, GOOGLE_MAPS_API_KEY);
+  if (pincode) {
+    const result = await tryGeocode(`${pincode}, India`);
     if (result.success) {
-      const finalPincode = result.pincode || pincode;
-      await updateClientLocation(client.id, result.latitude, result.longitude, finalPincode);
-      return { success: true, strategy: "Full Address", ...result };
+      await updateClientLocation(client.id, result.latitude, result.longitude, pincode);
+      return { success: true, strategy: "Pincode Only", ...result };
     }
   }
 
@@ -200,7 +231,7 @@ async function geocodeSingleClientWithStrategies(client) {
   // =============================================
   return { 
     success: false, 
-    error: "All geocoding strategies failed",
+    error: pincode ? "All geocoding strategies failed" : "No valid pincode or address",
     clientId: client.id
   };
 }
@@ -208,21 +239,19 @@ async function geocodeSingleClientWithStrategies(client) {
 /**
  * Try geocoding a single address
  */
-async function tryGeocode(address, apiKey) {
+async function tryGeocode(address) {
   try {
-    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&region=in&key=${apiKey}`;
+    const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&region=in&key=${GOOGLE_MAPS_API_KEY}`;
     
     const response = await fetch(url);
     const data = await response.json();
     
-    // Handle rate limiting
     if (data.status === 'OVER_QUERY_LIMIT') {
       console.log(`   ⏳ Rate limit hit, waiting...`);
       await sleep(3000);
       return { success: false, error: 'OVER_QUERY_LIMIT' };
     }
     
-    // Handle no results
     if (data.status !== 'OK' || !data.results || data.results.length === 0) {
       return { success: false, error: data.status || 'NO_RESULTS' };
     }
@@ -230,7 +259,7 @@ async function tryGeocode(address, apiKey) {
     const result = data.results[0];
     const location = result.geometry.location;
     
-    // Validate coordinates are in India (roughly)
+    // Validate coordinates are in India
     const latitude = location.lat;
     const longitude = location.lng;
     
@@ -258,9 +287,6 @@ async function tryGeocode(address, apiKey) {
   }
 }
 
-/**
- * Update client with geocoded location
- */
 async function updateClientLocation(clientId, latitude, longitude, pincode) {
   await pool.query(
     `UPDATE clients 
@@ -273,20 +299,15 @@ async function updateClientLocation(clientId, latitude, longitude, pincode) {
   );
 }
 
-/**
- * Extract pincode from address text
- */
 function extractPincodeFromAddress(address) {
   if (!address) return null;
   
-  // Match 6-digit Indian pincode
-  const match = address.match(/\b[1-9][0-9]{5}\b/);
-  return match ? match[0] : null;
+  const matches = address.match(/\b[1-9][0-9]{5}\b/g);
+  if (!matches || matches.length === 0) return null;
+  
+  return matches[matches.length - 1];
 }
 
-/**
- * Extract city name from address
- */
 function extractCityFromAddress(address) {
   if (!address) return null;
   
@@ -296,10 +317,11 @@ function extractCityFromAddress(address) {
     'Nagpur', 'Indore', 'Thane', 'Bhopal', 'Visakhapatnam', 'Pimpri', 'Patna',
     'Vadodara', 'Ghaziabad', 'Ludhiana', 'Agra', 'Nashik', 'Faridabad',
     'Meerut', 'Rajkot', 'Varanasi', 'Srinagar', 'Aurangabad', 'Dhanbad',
-    'Amritsar', 'Navi Mumbai', 'Allahabad', 'Ranchi', 'Howrah', 'Coimbatore',
-    'Jabalpur', 'Gwalior', 'Vijayawada', 'Jodhpur', 'Madurai', 'Raipur',
-    'Kota', 'Guwahati', 'Chandigarh', 'Solapur', 'Hubli', 'Bareilly',
-    'Moradabad', 'Mysore', 'Gurgaon', 'Aligarh', 'Jalandhar', 'Noida'
+    'Amritsar', 'Navi Mumbai', 'Allahabad', 'Prayagraj', 'Ranchi', 'Howrah', 
+    'Coimbatore', 'Jabalpur', 'Gwalior', 'Vijayawada', 'Jodhpur', 'Madurai', 
+    'Raipur', 'Kota', 'Guwahati', 'Chandigarh', 'Solapur', 'Hubli', 'Bareilly',
+    'Moradabad', 'Mysore', 'Mysuru', 'Gurgaon', 'Gurugram', 'Aligarh', 
+    'Jalandhar', 'Noida', 'Panvel', 'Nanded', 'Kolhapur', 'Ajmer', 'Akola'
   ];
   
   for (const city of majorCities) {
@@ -312,58 +334,43 @@ function extractCityFromAddress(address) {
   return null;
 }
 
-/**
- * Extract area/locality from address
- */
 function extractAreaFromAddress(address) {
   if (!address) return null;
   
-  // Common patterns: "Near X", "Opposite X", "X Road", "X Nagar"
   const areaPatterns = [
     /(?:near|opp|opposite)\s+([A-Za-z\s]+?)(?:,|\.|\s+\d)/i,
-    /([A-Za-z\s]+?)\s+(?:road|rd|nagar|colony|area|sector)/i,
+    /([A-Za-z\s]+?)\s+(?:industrial\s+)?(?:estate|road|rd|nagar|colony|area|sector|park|complex)/i,
   ];
   
   for (const pattern of areaPatterns) {
     const match = address.match(pattern);
     if (match && match[1]) {
-      return match[1].trim();
+      const area = match[1].trim();
+      if (area.length > 3) {
+        return area;
+      }
     }
   }
   
   return null;
 }
 
-/**
- * Simplify address by removing noise
- */
 function simplifyAddress(address) {
   if (!address) return null;
   
   let simplified = address;
   
-  // Remove shop/flat numbers
-  simplified = simplified.replace(/\b(shop|flat|unit|office|room|plot|floor)\s*(no\.?|number|#)?\s*[a-z0-9\-\/]+,?\s*/gi, '');
-  
-  // Remove phone numbers
+  simplified = simplified.replace(/\b(shop|flat|unit|office|room|plot|floor|wing|block)\s*(no\.?|number|#)?\s*[a-z0-9\-\/]+,?\s*/gi, '');
   simplified = simplified.replace(/\b\d{10}\b/g, '');
   simplified = simplified.replace(/\+?\d{1,4}[\s-]?\d{3,4}[\s-]?\d{3,4}/g, '');
-  
-  // Remove email addresses
   simplified = simplified.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '');
-  
-  // Remove multiple commas/spaces
+  simplified = simplified.replace(/\b(mr|ms|mrs|shri|smt|m\/s|dr)\s+[a-z\s]+,?\s*/gi, '');
   simplified = simplified.replace(/,+/g, ',').replace(/\s+/g, ' ').trim();
-  
-  // Remove leading/trailing commas
   simplified = simplified.replace(/^,+|,+$/g, '').trim();
   
   return simplified.length > 10 ? simplified : null;
 }
 
-/**
- * Save failed geocoding attempts for manual review
- */
 async function saveFailedGeocodingAttempts(failures) {
   try {
     for (const failure of failures) {
@@ -385,9 +392,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ============================================
-// MANUAL RETRY FUNCTION (Run separately)
-// ============================================
 export async function retryFailedGeocodings() {
   console.log("🔄 Retrying failed geocoding attempts...");
   
@@ -398,6 +402,7 @@ export async function retryFailedGeocodings() {
     WHERE c.latitude IS NULL 
       AND gf.attempt_count < 3
       AND gf.attempted_at < NOW() - INTERVAL '1 day'
+      AND (c.pincode IS NULL OR c.pincode ~ '^[1-9][0-9]{5}$')
     LIMIT 100
   `);
   
@@ -408,7 +413,6 @@ export async function retryFailedGeocodings() {
     
     if (geocodeResult.success) {
       console.log(`✅ Retry success: ${client.name}`);
-      // Remove from failures table
       await pool.query(`DELETE FROM geocoding_failures WHERE client_id = $1`, [client.id]);
     } else {
       console.log(`❌ Retry failed: ${client.name}`);

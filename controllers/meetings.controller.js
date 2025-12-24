@@ -1,5 +1,115 @@
+// controllers/meetings.controller.js
+// ✅ UPDATED: Update client status when ending meeting
+
 import { pool } from "../db.js";
 
+export const updateMeeting = async (req, res) => {
+  const { id } = req.params;
+  const { 
+    endTime, 
+    status, 
+    comments, 
+    attachments, 
+    latitude, 
+    longitude, 
+    accuracy,
+    clientStatus  // ✅ NEW: Client status to update (active/inactive/completed)
+  } = req.body;
+
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+
+    // Verify meeting belongs to user
+    const checkResult = await client.query(
+      `SELECT client_id FROM meetings WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id]
+    );
+
+    if (checkResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "MeetingNotFound" });
+    }
+
+    const clientId = checkResult.rows[0].client_id;
+
+    // Update meeting
+    const meetingResult = await client.query(
+      `UPDATE meetings
+       SET end_time = COALESCE($1, end_time, NOW()),
+           end_latitude = COALESCE($2, end_latitude),
+           end_longitude = COALESCE($3, end_longitude),
+           end_accuracy = COALESCE($4, end_accuracy),
+           status = COALESCE($5, status),
+           comments = COALESCE($6, comments),
+           attachments = COALESCE($7, attachments),
+           updated_at = NOW()
+       WHERE id = $8
+       RETURNING 
+         id,
+         user_id as "userId",
+         client_id as "clientId",
+         start_time as "startTime",
+         end_time as "endTime",
+         start_latitude as "startLatitude",
+         start_longitude as "startLongitude",
+         start_accuracy as "startAccuracy",
+         end_latitude as "endLatitude",
+         end_longitude as "endLongitude",
+         end_accuracy as "endAccuracy",
+         status,
+         comments,
+         attachments,
+         created_at as "createdAt",
+         updated_at as "updatedAt"`,
+      [
+        endTime || null,
+        latitude || null,
+        longitude || null,
+        accuracy || null,
+        status || 'COMPLETED',
+        comments || null,
+        attachments ? JSON.stringify(attachments) : null,
+        id
+      ]
+    );
+
+    // ✅ NEW: Update client status if provided
+    if (clientStatus && ['active', 'inactive', 'completed'].includes(clientStatus.toLowerCase())) {
+      await client.query(
+        `UPDATE clients 
+         SET status = $1, updated_at = NOW() 
+         WHERE id = $2`,
+        [clientStatus.toLowerCase(), clientId]
+      );
+      
+      console.log(`✅ Client ${clientId} status updated to: ${clientStatus}`);
+    }
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Meeting ended: ${id} | Client status: ${clientStatus || 'unchanged'}`);
+
+    res.json({
+      message: "MeetingUpdated",
+      meeting: meetingResult.rows[0],
+      clientStatusUpdated: !!clientStatus
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error("Error updating meeting:", error);
+    res.status(500).json({ 
+      error: "UpdateFailed", 
+      message: error.message 
+    });
+  } finally {
+    client.release();
+  }
+};
+
+// Keep all other functions the same (startMeeting, getActiveMeeting, etc.)
 export const startMeeting = async (req, res) => {
   const { clientId, latitude, longitude, accuracy } = req.body;
 
@@ -7,7 +117,6 @@ export const startMeeting = async (req, res) => {
     return res.status(400).json({ error: "ClientIdRequired" });
   }
 
-  // Check if there's already an active meeting for this client
   const existingMeeting = await pool.query(
     `SELECT id FROM meetings 
      WHERE client_id = $1 
@@ -93,68 +202,6 @@ export const getActiveMeeting = async (req, res) => {
   res.json({ meeting: result.rows[0] });
 };
 
-export const updateMeeting = async (req, res) => {
-  const { id } = req.params;
-  const { endTime, status, comments, attachments, latitude, longitude, accuracy } = req.body;
-
-  // Verify meeting belongs to user
-  const checkResult = await pool.query(
-    `SELECT id FROM meetings WHERE id = $1 AND user_id = $2`,
-    [id, req.user.id]
-  );
-
-  if (checkResult.rows.length === 0) {
-    return res.status(404).json({ error: "MeetingNotFound" });
-  }
-
-  const result = await pool.query(
-    `UPDATE meetings
-     SET end_time = COALESCE($1, end_time, NOW()),
-         end_latitude = COALESCE($2, end_latitude),
-         end_longitude = COALESCE($3, end_longitude),
-         end_accuracy = COALESCE($4, end_accuracy),
-         status = COALESCE($5, status),
-         comments = COALESCE($6, comments),
-         attachments = COALESCE($7, attachments),
-         updated_at = NOW()
-     WHERE id = $8
-     RETURNING 
-       id,
-       user_id as "userId",
-       client_id as "clientId",
-       start_time as "startTime",
-       end_time as "endTime",
-       start_latitude as "startLatitude",
-       start_longitude as "startLongitude",
-       start_accuracy as "startAccuracy",
-       end_latitude as "endLatitude",
-       end_longitude as "endLongitude",
-       end_accuracy as "endAccuracy",
-       status,
-       comments,
-       attachments,
-       created_at as "createdAt",
-       updated_at as "updatedAt"`,
-    [
-      endTime || null,
-      latitude || null,
-      longitude || null,
-      accuracy || null,
-      status || 'COMPLETED',
-      comments || null,
-      attachments ? JSON.stringify(attachments) : null,
-      id
-    ]
-  );
-
-  console.log(`✅ Meeting ended: ${id}`);
-
-  res.json({
-    message: "MeetingUpdated",
-    meeting: result.rows[0]
-  });
-};
-
 export const uploadAttachment = async (req, res) => {
   const { id } = req.params;
 
@@ -162,7 +209,6 @@ export const uploadAttachment = async (req, res) => {
     return res.status(400).json({ error: "NoFileUploaded" });
   }
 
-  // Verify meeting belongs to user
   const checkResult = await pool.query(
     `SELECT id FROM meetings WHERE id = $1 AND user_id = $2`,
     [id, req.user.id]
@@ -172,13 +218,11 @@ export const uploadAttachment = async (req, res) => {
     return res.status(404).json({ error: "MeetingNotFound" });
   }
 
-  // In production, upload to S3/Cloud Storage
   const fileName = `${Date.now()}-${req.file.originalname}`;
   const fileUrl = `https://storage.yourdomain.com/meetings/${fileName}`;
 
   console.log(`📎 Meeting attachment uploaded: ${fileName} (${req.file.size} bytes)`);
 
-  // Get current attachments
   const currentResult = await pool.query(
     `SELECT attachments FROM meetings WHERE id = $1`,
     [id]
@@ -187,7 +231,6 @@ export const uploadAttachment = async (req, res) => {
   const currentAttachments = currentResult.rows[0]?.attachments || [];
   const updatedAttachments = [...currentAttachments, fileUrl];
 
-  // Update meeting with new attachment
   await pool.query(
     `UPDATE meetings 
      SET attachments = $1, updated_at = NOW()
@@ -235,34 +278,33 @@ export const getMeetings = async (req, res) => {
 
   if (clientId) {
     paramCount++;
-    query += ` AND m.client_id = ${paramCount}`;
+    query += ` AND m.client_id = $${paramCount}`;
     params.push(clientId);
   }
 
   if (status) {
     paramCount++;
-    query += ` AND m.status = ${paramCount}`;
+    query += ` AND m.status = $${paramCount}`;
     params.push(status);
   }
 
   if (startDate) {
     paramCount++;
-    query += ` AND m.start_time >= ${paramCount}`;
+    query += ` AND m.start_time >= $${paramCount}`;
     params.push(startDate);
   }
 
   if (endDate) {
     paramCount++;
-    query += ` AND m.start_time <= ${paramCount}`;
+    query += ` AND m.start_time <= $${paramCount}`;
     params.push(endDate);
   }
 
-  query += ` ORDER BY m.start_time DESC LIMIT ${paramCount + 1} OFFSET ${paramCount + 2}`;
+  query += ` ORDER BY m.start_time DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
   params.push(limit, offset);
 
   const result = await pool.query(query, params);
 
-  // Get total count
   let countQuery = "SELECT COUNT(*) FROM meetings WHERE user_id = $1";
   const countParams = [req.user.id];
   const countResult = await pool.query(countQuery, countParams);

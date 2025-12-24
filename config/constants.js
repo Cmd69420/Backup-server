@@ -9,3 +9,11 @@ export const CORS_ORIGIN = [
   "http://localhost:3000", 
   "https://geo-track-em3s.onrender.com"
 ];
+
+// 🆕 EMAIL CONFIGURATION
+export const EMAIL_CONFIG = {
+  service: 'gmail',
+  user: process.env.EMAIL_USER || 'your-app-email@gmail.com',
+  pass: process.env.EMAIL_PASSWORD || 'your-app-password-here',
+  from: process.env.EMAIL_FROM || 'GeoTrack <your-app-email@gmail.com>'
+};

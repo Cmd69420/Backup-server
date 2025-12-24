@@ -1,5 +1,6 @@
 import { pool } from "../db.js";
-import { startBackgroundGeocode } from "../utils/geocodeBatch.js";
+// REMOVED: import { startBackgroundGeocode } from "../utils/geocodeBatch.js";
+// REMOVED: import { getCoordinatesFromAddress, getCoordinatesFromPincode } from "../services/geocoding.service.js";
 
 export const syncTallyClients = async (req, res) => {
   const client = await pool.connect();
@@ -21,6 +22,7 @@ export const syncTallyClients = async (req, res) => {
     let newCount = 0;
     let updatedCount = 0;
     let failedCount = 0;
+    let receivedWithCoords = 0;
     const errors = [];
 
     for (const tallyClient of tallyClients) {
@@ -44,6 +46,15 @@ export const syncTallyClients = async (req, res) => {
           errors.push({ tally_guid, error: "Missing name" });
           continue;
         }
+
+        // Count clients that came with coordinates
+        if (latitude && longitude) {
+          receivedWithCoords++;
+        }
+
+        // ✅ USE COORDINATES AS-IS FROM MIDDLEWARE (no server-side geocoding)
+        const finalLat = latitude || null;
+        const finalLng = longitude || null;
 
         let existingClient = null;
         
@@ -86,15 +97,21 @@ export const syncTallyClients = async (req, res) => {
         let clientId;
 
         if (existingClient) {
-          // Update existing client
+          // Update existing client - ONLY update coordinates if they're NULL
           const updateResult = await client.query(
             `UPDATE clients 
              SET name = $1, 
                  email = COALESCE($2, email), 
                  phone = COALESCE($3, phone), 
                  address = COALESCE($4, address), 
-                 latitude = COALESCE($5, latitude), 
-                 longitude = COALESCE($6, longitude), 
+                 latitude = CASE 
+                   WHEN latitude IS NULL THEN $5 
+                   ELSE latitude 
+                 END,
+                 longitude = CASE 
+                   WHEN longitude IS NULL THEN $6 
+                   ELSE longitude 
+                 END,
                  status = $7, 
                  notes = COALESCE($8, notes), 
                  pincode = COALESCE($9, pincode),
@@ -102,16 +119,18 @@ export const syncTallyClients = async (req, res) => {
                  source = $11,
                  updated_at = NOW()
              WHERE id = $12
-             RETURNING id`,
+             RETURNING id, latitude, longitude`,
             [
-              name, email, phone, address, latitude, longitude, 
+              name, email, phone, address, finalLat, finalLng, 
               status, notes, pincode, tally_guid, source, existingClient.id
             ]
           );
           
           clientId = updateResult.rows[0].id;
+          const hasCoordinates = updateResult.rows[0].latitude && updateResult.rows[0].longitude;
+          
           updatedCount++;
-          console.log(`✏️ Updated: ${name} (${clientId})`);
+          console.log(`✏️  Updated: ${name} (${clientId}) - Coords: ${hasCoordinates ? '✔' : '✗'}`);
 
         } else {
           // Insert new client
@@ -121,13 +140,13 @@ export const syncTallyClients = async (req, res) => {
               pincode, tally_guid, source, created_by)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL)
              RETURNING id`,
-            [name, email, phone, address, latitude, longitude, status, notes, 
+            [name, email, phone, address, finalLat, finalLng, status, notes, 
              pincode, tally_guid, source]
           );
           
           clientId = insertResult.rows[0].id;
           newCount++;
-          console.log(`✨ Created: ${name} (${clientId})`);
+          console.log(`✨ Created: ${name} (${clientId}) - Coords: ${finalLat ? '✔' : '✗'}`);
         }
 
         // Update Tally mapping table
@@ -149,12 +168,6 @@ export const syncTallyClients = async (req, res) => {
           name: tallyClient.name,
           error: error.message 
         });
-        
-        if (error.message.includes('duplicate key') || 
-            error.message.includes('violates') ||
-            error.message.includes('constraint')) {
-          console.log(`⚠️ Continuing despite error for ${tallyClient.name}`);
-        }
       }
     }
 
@@ -169,14 +182,23 @@ export const syncTallyClients = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Trigger background geocoding for clients missing location data
-    startBackgroundGeocode();
-
-    console.log(`✅ Tally sync completed:`);
+    console.log(`\n✅ Tally sync completed:`);
     console.log(`   📊 Total: ${tallyClients.length}`);
     console.log(`   ✨ New: ${newCount}`);
-    console.log(`   ✏️ Updated: ${updatedCount}`);
+    console.log(`   ✏️  Updated: ${updatedCount}`);
+    console.log(`   🌍 Received with coordinates: ${receivedWithCoords}`);
     console.log(`   ❌ Failed: ${failedCount}`);
+
+    // Check for remaining clients missing coordinates
+    const missingCoordsResult = await pool.query(
+      `SELECT COUNT(*) FROM clients 
+       WHERE (latitude IS NULL OR longitude IS NULL)`
+    );
+    const missingCoords = parseInt(missingCoordsResult.rows[0].count);
+    
+    console.log(`\n📍 Geocoding Status:`);
+    console.log(`   Clients without coordinates: ${missingCoords}`);
+    console.log(`   ℹ️  Note: Server-side geocoding is disabled. Please geocode in middleware.`);
 
     res.status(200).json({
       message: "SyncCompleted",
@@ -184,7 +206,12 @@ export const syncTallyClients = async (req, res) => {
         total: tallyClients.length,
         new: newCount,
         updated: updatedCount,
-        failed: failedCount
+        failed: failedCount,
+        receivedWithCoordinates: receivedWithCoords
+      },
+      geocoding: {
+        clientsMissingCoords: missingCoords,
+        note: "Server-side geocoding disabled. Geocode in middleware before upload."
       },
       errors: errors.length > 0 ? errors : undefined
     });
@@ -279,5 +306,15 @@ export const triggerSync = async (req, res) => {
   res.json({ 
     message: "SyncTriggered",
     note: "Middleware should start syncing now"
+  });
+};
+
+export const getClientGuids = async (req, res) => {
+  const result = await pool.query(
+    `SELECT tally_guid FROM clients WHERE tally_guid IS NOT NULL`
+  );
+  
+  res.json({
+    guids: result.rows.map(r => r.tally_guid)
   });
 };
