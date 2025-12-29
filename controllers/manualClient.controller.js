@@ -1,3 +1,6 @@
+// controllers/manualClient.controller.js
+// UPDATED: All queries now filter by company_id
+
 import { pool } from "../db.js";
 import { getCoordinatesFromAddress, getCoordinatesFromPincode } from "../services/geocoding.service.js";
 
@@ -14,7 +17,6 @@ export const createClient = async (req, res) => {
       notes
     } = req.body;
 
-    // Validation
     if (!name || name.trim().length === 0) {
       return res.status(400).json({ 
         error: "ValidationError", 
@@ -22,7 +24,6 @@ export const createClient = async (req, res) => {
       });
     }
 
-    // Validate email format if provided
     if (email && email.trim().length > 0) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!emailRegex.test(email)) {
@@ -33,7 +34,6 @@ export const createClient = async (req, res) => {
       }
     }
 
-    // Validate phone format if provided
     if (phone && phone.trim().length > 0) {
       const phoneRegex = /^[0-9]{10,15}$/;
       if (!phoneRegex.test(phone.replace(/\D/g, ''))) {
@@ -44,7 +44,6 @@ export const createClient = async (req, res) => {
       }
     }
 
-    // Validate pincode if provided
     if (pincode && pincode.trim().length > 0) {
       if (pincode.length !== 6 || !/^\d{6}$/.test(pincode)) {
         return res.status(400).json({
@@ -56,11 +55,11 @@ export const createClient = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // Check for duplicates
+    // ✅ UPDATED: Check for duplicates WITHIN THE SAME COMPANY
     if (email && email.trim().length > 0) {
       const emailCheck = await client.query(
-        "SELECT id FROM clients WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) LIMIT 1",
-        [email]
+        "SELECT id FROM clients WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) AND company_id = $2 LIMIT 1",
+        [email, req.companyId]
       );
       if (emailCheck.rows.length > 0) {
         await client.query("ROLLBACK");
@@ -75,8 +74,8 @@ export const createClient = async (req, res) => {
       const cleanPhone = phone.replace(/\D/g, '');
       if (cleanPhone.length >= 10) {
         const phoneCheck = await client.query(
-          "SELECT id FROM clients WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = $1 LIMIT 1",
-          [cleanPhone]
+          "SELECT id FROM clients WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = $1 AND company_id = $2 LIMIT 1",
+          [cleanPhone, req.companyId]
         );
         if (phoneCheck.rows.length > 0) {
           await client.query("ROLLBACK");
@@ -88,14 +87,13 @@ export const createClient = async (req, res) => {
       }
     }
 
-    // 🌍 Geocode the address or pincode
+    // Geocode the address or pincode
     let latitude = null;
     let longitude = null;
     let geocodeSource = null;
 
     console.log(`🔍 Geocoding for new client: ${name}`);
 
-    // Try geocoding from full address first
     if (address && address.trim().length > 0) {
       console.log(`   📍 Trying address: ${address}`);
       const coords = await getCoordinatesFromAddress(address);
@@ -107,7 +105,6 @@ export const createClient = async (req, res) => {
       }
     }
 
-    // Fallback to pincode if address geocoding failed
     if (!latitude && pincode && pincode.trim().length === 6) {
       console.log(`   📍 Trying pincode: ${pincode}`);
       const coords = await getCoordinatesFromPincode(pincode);
@@ -123,12 +120,12 @@ export const createClient = async (req, res) => {
       console.log(`   ⚠️ Geocoding failed - client will be created without coordinates`);
     }
 
-    // Insert the new client
+    // ✅ UPDATED: Include company_id in INSERT
     const insertResult = await client.query(
       `INSERT INTO clients 
        (name, email, phone, address, latitude, longitude, 
-        status, notes, pincode, source, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+        status, notes, pincode, source, created_by, company_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
        RETURNING *`,
       [
         name.trim(),
@@ -141,7 +138,8 @@ export const createClient = async (req, res) => {
         notes?.trim() || null,
         pincode?.trim() || null,
         'app',
-        req.user.id
+        req.user.id,
+        req.companyId
       ]
     );
 
@@ -198,31 +196,33 @@ export const getClients = async (req, res) => {
 
   const offset = (page - 1) * limit;
 
+  // ✅ UPDATED: Add company_id filter
   let query = `
     SELECT 
       id, name, email, phone, address, pincode, 
       latitude, longitude, status, notes, source,
       tally_guid, created_at, updated_at
     FROM clients
-    WHERE 1=1
+    WHERE company_id = $1
   `;
   
-  const params = [];
+  const params = [req.companyId];
   let paramIndex = 1;
 
   if (status && status !== 'all') {
+    paramIndex++;
     query += ` AND status = $${paramIndex}`;
     params.push(status);
-    paramIndex++;
   }
 
   if (source) {
+    paramIndex++;
     query += ` AND source = $${paramIndex}`;
     params.push(source);
-    paramIndex++;
   }
 
   if (search) {
+    paramIndex++;
     query += ` AND (
       name ILIKE $${paramIndex} OR 
       email ILIKE $${paramIndex} OR 
@@ -230,18 +230,34 @@ export const getClients = async (req, res) => {
       address ILIKE $${paramIndex}
     )`;
     params.push(`%${search}%`);
-    paramIndex++;
   }
 
-  // Get total count
-  const countResult = await pool.query(
-    `SELECT COUNT(*) FROM clients WHERE 1=1` + 
-    (status && status !== 'all' ? ` AND status = '${status}'` : '') +
-    (source ? ` AND source = '${source}'` : '') +
-    (search ? ` AND (name ILIKE '%${search}%' OR email ILIKE '%${search}%')` : '')
-  );
+  // ✅ UPDATED: Add company_id filter to count query
+  let countQuery = `SELECT COUNT(*) FROM clients WHERE company_id = $1`;
+  const countParams = [req.companyId];
+  let countParamIndex = 1;
+  
+  if (status && status !== 'all') {
+    countParamIndex++;
+    countQuery += ` AND status = $${countParamIndex}`;
+    countParams.push(status);
+  }
+  
+  if (source) {
+    countParamIndex++;
+    countQuery += ` AND source = $${countParamIndex}`;
+    countParams.push(source);
+  }
+  
+  if (search) {
+    countParamIndex++;
+    countQuery += ` AND (name ILIKE $${countParamIndex} OR email ILIKE $${countParamIndex})`;
+    countParams.push(`%${search}%`);
+  }
 
-  query += ` ORDER BY created_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+  const countResult = await pool.query(countQuery, countParams);
+
+  query += ` ORDER BY created_at DESC LIMIT $${paramIndex + 1} OFFSET $${paramIndex + 2}`;
   params.push(limit, offset);
 
   const result = await pool.query(query, params);
@@ -260,9 +276,10 @@ export const getClients = async (req, res) => {
 export const getClientById = async (req, res) => {
   const { id } = req.params;
 
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
-    `SELECT * FROM clients WHERE id = $1`,
-    [id]
+    `SELECT * FROM clients WHERE id = $1 AND company_id = $2`,
+    [id, req.companyId]
   );
 
   if (result.rows.length === 0) {
@@ -293,10 +310,10 @@ export const updateClient = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // Check if client exists
+    // ✅ UPDATED: Verify client exists in user's company
     const existingClient = await client.query(
-      "SELECT * FROM clients WHERE id = $1",
-      [id]
+      "SELECT * FROM clients WHERE id = $1 AND company_id = $2",
+      [id, req.companyId]
     );
 
     if (existingClient.rows.length === 0) {
@@ -309,7 +326,7 @@ export const updateClient = async (req, res) => {
 
     const oldClient = existingClient.rows[0];
 
-    // 🌍 Re-geocode if address or pincode changed
+    // Re-geocode if address or pincode changed
     let latitude = oldClient.latitude;
     let longitude = oldClient.longitude;
     let geocodeSource = null;
@@ -320,22 +337,20 @@ export const updateClient = async (req, res) => {
     if (addressChanged || pincodeChanged) {
       console.log(`🔍 Re-geocoding client ${id}: ${name || oldClient.name}`);
 
-      // Try new address first
       if (addressChanged) {
         const coords = await getCoordinatesFromAddress(address);
         if (coords) {
-          latitude = coords.latitude;  // 👈 Changed from coords.lat
+          latitude = coords.latitude;
           longitude = coords.longitude;
           geocodeSource = 'address';
           console.log(`   ✅ New address geocoded`);
         }
       }
 
-      // Fallback to new pincode
       if (!latitude && pincodeChanged) {
         const coords = await getCoordinatesFromPincode(pincode);
         if (coords) {
-          latitude = coords.latitude;  // 👈 Changed from coords.lat
+          latitude = coords.latitude;
           longitude = coords.longitude;
           geocodeSource = 'pincode';
           console.log(`   ✅ New pincode geocoded`);
@@ -390,9 +405,10 @@ export const updateClient = async (req, res) => {
 export const deleteClient = async (req, res) => {
   const { id } = req.params;
 
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
-    "DELETE FROM clients WHERE id = $1 RETURNING id, name",
-    [id]
+    "DELETE FROM clients WHERE id = $1 AND company_id = $2 RETURNING id, name",
+    [id, req.companyId]
   );
 
   if (result.rows.length === 0) {
@@ -420,20 +436,23 @@ export const searchClients = async (req, res) => {
     });
   }
 
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
     `SELECT 
       id, name, email, phone, address, pincode, 
       latitude, longitude, status
     FROM clients
-    WHERE 
-      name ILIKE $1 OR 
-      email ILIKE $1 OR 
-      phone ILIKE $1 OR
-      address ILIKE $1 OR
-      pincode ILIKE $1
+    WHERE company_id = $1
+    AND (
+      name ILIKE $2 OR 
+      email ILIKE $2 OR 
+      phone ILIKE $2 OR
+      address ILIKE $2 OR
+      pincode ILIKE $2
+    )
     ORDER BY name
     LIMIT 20`,
-    [`%${q}%`]
+    [req.companyId, `%${q}%`]
   );
 
   res.json({

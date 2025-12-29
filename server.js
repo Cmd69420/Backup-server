@@ -1,8 +1,13 @@
+// server.js
+// UPDATED: Added company context middleware and routes
+
 import express from "express";
 import cors from "cors";
 import { pool } from "./db.js";
 import { CORS_ORIGIN, PORT } from "./config/constants.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { authenticateToken } from "./middleware/auth.js";
+import { attachCompanyContext } from "./middleware/company.js";
 import { startBackgroundGeocode } from "./utils/geocodeBatch.js";
 
 // Route imports
@@ -15,6 +20,7 @@ import adminRoutes from "./routes/admin.routes.js";
 import syncRoutes from "./routes/sync.routes.js";
 import servicesRoutes from './routes/services.routes.js';
 import manualClientRoutes from './routes/manualClient.routes.js';
+import companyRoutes from './routes/company.routes.js'; // ← NEW
 
 const app = express();
 
@@ -22,13 +28,12 @@ const app = express();
 app.use(cors({
   origin: CORS_ORIGIN,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization", "x-company-id"] // ← Added x-company-id
 }));
 app.options("*", cors());
 
-// ✅ CHANGE THIS LINE - Add limit parameter
-app.use(express.json({ limit: '10mb' }));  // Changed from: app.use(express.json());
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // ✅ Add this line too
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging
 app.use((req, res, next) => {
@@ -45,26 +50,58 @@ pool.query("SELECT NOW()", (err, res) => {
   }
 });
 
-// Routes
+// ============================================
+// PUBLIC ROUTES (No Authentication)
+// ============================================
 app.use("/auth", authRoutes);
-app.use("/clients", clientRoutes);
-app.use("/location-logs", locationRoutes);
-app.use("/meetings", meetingRoutes);
-app.use("/expenses", expenseRoutes);
-app.use("/admin", adminRoutes);
-app.use("/api/sync", syncRoutes);
-app.use('/services', servicesRoutes);
-app.use('/api/manual-clients', manualClientRoutes);
 
-// Health check
+// ============================================
+// COMPANY-SCOPED ROUTES (Authenticated + Company Context)
+// ============================================
+// These routes require both authentication AND company context
+app.use("/clients", authenticateToken, attachCompanyContext, clientRoutes);
+app.use("/location-logs", authenticateToken, attachCompanyContext, locationRoutes);
+app.use("/meetings", authenticateToken, attachCompanyContext, meetingRoutes);
+app.use("/expenses", authenticateToken, attachCompanyContext, expenseRoutes);
+app.use('/services', authenticateToken, attachCompanyContext, servicesRoutes);
+app.use('/api/manual-clients', authenticateToken, attachCompanyContext, manualClientRoutes);
+
+// ============================================
+// ADMIN ROUTES (Company Admin)
+// ============================================
+// Admin routes operate within their company scope
+app.use("/admin", authenticateToken, attachCompanyContext, adminRoutes);
+
+// ============================================
+// SUPER ADMIN ROUTES (Cross-Company Management)
+// ============================================
+// Super admin routes for managing all companies
+app.use("/super-admin/companies", companyRoutes);
+
+// ============================================
+// SYNC ROUTES (Middleware + Authenticated)
+// ============================================
+app.use("/api/sync", syncRoutes);
+
+// ============================================
+// HEALTH CHECK
+// ============================================
 app.get("/", (req, res) => {
-  res.json({ message: "Client Tracking API with Pincode Filtering" });
+  res.json({ 
+    message: "Multi-Company Client Tracking API",
+    version: "2.0.0",
+    features: ["company-scoped", "super-admin", "pincode-filtering"]
+  });
 });
 
 app.get("/dbtest", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
-    res.json({ db_time: result.rows[0].now });
+    const companyCount = await pool.query("SELECT COUNT(*) FROM companies");
+    res.json({ 
+      db_time: result.rows[0].now,
+      companies: parseInt(companyCount.rows[0].count)
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -76,6 +113,7 @@ app.use(errorHandler);
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`🏢 Multi-company mode enabled`);
   console.log(`📍 Pincode-based filtering enabled`);
-  console.log(`📦 Request body limit: 10mb`);  // ✅ Add confirmation log
+  console.log(`📦 Request body limit: 10mb`);
 });

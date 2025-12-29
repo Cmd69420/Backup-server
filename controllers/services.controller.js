@@ -1,21 +1,19 @@
-// controllers/services.controller.js - COMPLETE VERSION
+// controllers/services.controller.js
+// UPDATED: All queries now filter by company_id
 
 import { pool } from "../db.js";
 
-// ==========================================
-// 1. Get services for ONE specific client
-// Used by: ClientServicesModal.js
-// ==========================================
+// Get services for ONE specific client
 export const getClientServices = async (req, res) => {
   const { clientId } = req.params;
   const { status, page = 1, limit = 50 } = req.query;
   const offset = (page - 1) * limit;
 
   try {
-    // Check if client exists
+    // ✅ UPDATED: Verify client exists in user's company
     const clientCheck = await pool.query(
-      'SELECT id FROM clients WHERE id = $1',
-      [clientId]
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      [clientId, req.companyId]
     );
 
     if (clientCheck.rows.length === 0) {
@@ -25,7 +23,7 @@ export const getClientServices = async (req, res) => {
       });
     }
 
-    // Build query
+    // ✅ UPDATED: Add company_id filter
     let query = `
       SELECT 
         cs.*,
@@ -36,10 +34,10 @@ export const getClientServices = async (req, res) => {
       LEFT JOIN users u1 ON cs.created_by = u1.id
       LEFT JOIN users u2 ON cs.updated_by = u2.id
       LEFT JOIN clients c ON cs.client_id = c.id
-      WHERE cs.client_id = $1
+      WHERE cs.client_id = $1 AND cs.company_id = $2
     `;
-    const params = [clientId];
-    let paramCount = 1;
+    const params = [clientId, req.companyId];
+    let paramCount = 2;
 
     if (status) {
       paramCount++;
@@ -52,8 +50,9 @@ export const getClientServices = async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    const countQuery = `SELECT COUNT(*) FROM client_services WHERE client_id = $1`;
-    const countResult = await pool.query(countQuery, [clientId]);
+    // ✅ UPDATED: Add company_id filter to count query
+    const countQuery = `SELECT COUNT(*) FROM client_services WHERE client_id = $1 AND company_id = $2`;
+    const countResult = await pool.query(countQuery, [clientId, req.companyId]);
     const total = parseInt(countResult.rows[0].count);
 
     res.json({
@@ -79,16 +78,13 @@ export const getClientServices = async (req, res) => {
   }
 };
 
-// ==========================================
-// 2. Get ALL services across ALL clients
-// Used by: ClientServicesPage.js
-// ==========================================
+// Get ALL services across ALL clients (within company)
 export const getAllServices = async (req, res) => {
   const { status, page = 1, limit = 5000 } = req.query;
   const offset = (page - 1) * limit;
 
   try {
-    // ONE database query to get ALL services with client info
+    // ✅ UPDATED: Add company_id filter
     let query = `
       SELECT 
         cs.id,
@@ -109,12 +105,11 @@ export const getAllServices = async (req, res) => {
       FROM client_services cs
       LEFT JOIN clients c ON cs.client_id = c.id
       LEFT JOIN users u1 ON cs.created_by = u1.id
-      WHERE 1=1
+      WHERE cs.company_id = $1
     `;
-    const params = [];
-    let paramCount = 0;
+    const params = [req.companyId];
+    let paramCount = 1;
 
-    // Optional status filter
     if (status) {
       paramCount++;
       query += ` AND cs.status = $${paramCount}`;
@@ -126,12 +121,16 @@ export const getAllServices = async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    // Get total count
-    let countQuery = `SELECT COUNT(*) FROM client_services cs WHERE 1=1`;
+    // ✅ UPDATED: Add company_id filter to count query
+    let countQuery = `SELECT COUNT(*) FROM client_services cs WHERE cs.company_id = $1`;
+    const countParams = [req.companyId];
+    
     if (status) {
-      countQuery += ` AND cs.status = $1`;
+      countQuery += ` AND cs.status = $2`;
+      countParams.push(status);
     }
-    const countResult = await pool.query(countQuery, status ? [status] : []);
+    
+    const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
 
     console.log(`✅ Fetched ${result.rows.length} services (Total: ${total})`);
@@ -154,9 +153,7 @@ export const getAllServices = async (req, res) => {
   }
 };
 
-// ==========================================
-// 3. Create new service
-// ==========================================
+// Create new service
 export const createService = async (req, res) => {
   const { clientId } = req.params;
   const {
@@ -177,10 +174,10 @@ export const createService = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Check if client exists
+    // ✅ UPDATED: Verify client exists in user's company
     const clientCheck = await client.query(
-      'SELECT id FROM clients WHERE id = $1',
-      [clientId]
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      [clientId, req.companyId]
     );
 
     if (clientCheck.rows.length === 0) {
@@ -188,11 +185,11 @@ export const createService = async (req, res) => {
       return res.status(404).json({ error: "Client not found" });
     }
 
-    // Create service
+    // ✅ UPDATED: Include company_id in INSERT
     const result = await client.query(
       `INSERT INTO client_services 
-       (client_id, service_name, description, status, start_date, expiry_date, price, notes, created_by, updated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
+       (client_id, service_name, description, status, start_date, expiry_date, price, notes, created_by, updated_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
        RETURNING *`,
       [
         clientId,
@@ -203,18 +200,20 @@ export const createService = async (req, res) => {
         expiryDate || null,
         price || null,
         notes || null,
-        req.user.id
+        req.user.id,
+        req.companyId
       ]
     );
 
-    // Log history
+    // ✅ UPDATED: Include company_id in history INSERT
     await client.query(
-      `INSERT INTO client_service_history (service_id, action, changed_by, changes)
-       VALUES ($1, 'created', $2, $3)`,
+      `INSERT INTO client_service_history (service_id, action, changed_by, changes, company_id)
+       VALUES ($1, 'created', $2, $3, $4)`,
       [
         result.rows[0].id,
         req.user.id,
-        JSON.stringify(result.rows[0])
+        JSON.stringify(result.rows[0]),
+        req.companyId
       ]
     );
 
@@ -235,9 +234,7 @@ export const createService = async (req, res) => {
   }
 };
 
-// ==========================================
-// 4. Update service
-// ==========================================
+// Update service
 export const updateService = async (req, res) => {
   const { serviceId } = req.params;
   const {
@@ -254,9 +251,10 @@ export const updateService = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // ✅ UPDATED: Verify service exists in user's company
     const currentResult = await client.query(
-      'SELECT * FROM client_services WHERE id = $1',
-      [serviceId]
+      'SELECT * FROM client_services WHERE id = $1 AND company_id = $2',
+      [serviceId, req.companyId]
     );
 
     if (currentResult.rows.length === 0) {
@@ -303,10 +301,11 @@ export const updateService = async (req, res) => {
       }
     });
 
+    // ✅ UPDATED: Include company_id in history INSERT
     await client.query(
-      `INSERT INTO client_service_history (service_id, action, changed_by, changes)
-       VALUES ($1, 'updated', $2, $3)`,
-      [serviceId, req.user.id, JSON.stringify(changes)]
+      `INSERT INTO client_service_history (service_id, action, changed_by, changes, company_id)
+       VALUES ($1, 'updated', $2, $3, $4)`,
+      [serviceId, req.user.id, JSON.stringify(changes), req.companyId]
     );
 
     await client.query('COMMIT');
@@ -326,9 +325,7 @@ export const updateService = async (req, res) => {
   }
 };
 
-// ==========================================
-// 5. Delete service
-// ==========================================
+// Delete service
 export const deleteService = async (req, res) => {
   const { serviceId } = req.params;
 
@@ -336,9 +333,10 @@ export const deleteService = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    // ✅ UPDATED: Verify service exists in user's company
     const serviceResult = await client.query(
-      'SELECT * FROM client_services WHERE id = $1',
-      [serviceId]
+      'SELECT * FROM client_services WHERE id = $1 AND company_id = $2',
+      [serviceId, req.companyId]
     );
 
     if (serviceResult.rows.length === 0) {
@@ -346,10 +344,11 @@ export const deleteService = async (req, res) => {
       return res.status(404).json({ error: "Service not found" });
     }
 
+    // ✅ UPDATED: Include company_id in history INSERT
     await client.query(
-      `INSERT INTO client_service_history (service_id, action, changed_by, changes)
-       VALUES ($1, 'deleted', $2, $3)`,
-      [serviceId, req.user.id, JSON.stringify(serviceResult.rows[0])]
+      `INSERT INTO client_service_history (service_id, action, changed_by, changes, company_id)
+       VALUES ($1, 'deleted', $2, $3, $4)`,
+      [serviceId, req.user.id, JSON.stringify(serviceResult.rows[0]), req.companyId]
     );
 
     await client.query('DELETE FROM client_services WHERE id = $1', [serviceId]);
@@ -368,30 +367,30 @@ export const deleteService = async (req, res) => {
   }
 };
 
-// ==========================================
-// 6. Get service history
-// ==========================================
+// Get service history
 export const getServiceHistory = async (req, res) => {
   const { serviceId } = req.params;
   const { page = 1, limit = 20 } = req.query;
   const offset = (page - 1) * limit;
 
   try {
+    // ✅ UPDATED: Add company_id filter
     const result = await pool.query(
       `SELECT 
          sh.*,
          u.email as "changedByEmail"
        FROM client_service_history sh
        LEFT JOIN users u ON sh.changed_by = u.id
-       WHERE sh.service_id = $1
+       WHERE sh.service_id = $1 AND sh.company_id = $2
        ORDER BY sh.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [serviceId, limit, offset]
+       LIMIT $3 OFFSET $4`,
+      [serviceId, req.companyId, limit, offset]
     );
 
+    // ✅ UPDATED: Add company_id filter to count query
     const countResult = await pool.query(
-      'SELECT COUNT(*) FROM client_service_history WHERE service_id = $1',
-      [serviceId]
+      'SELECT COUNT(*) FROM client_service_history WHERE service_id = $1 AND company_id = $2',
+      [serviceId, req.companyId]
     );
     const total = parseInt(countResult.rows[0].count);
 
@@ -410,13 +409,12 @@ export const getServiceHistory = async (req, res) => {
   }
 };
 
-// ==========================================
-// 7. Get expiring services
-// ==========================================
+// Get expiring services
 export const getExpiringServices = async (req, res) => {
   const { days = 30 } = req.query;
 
   try {
+    // ✅ UPDATED: Add company_id filter
     const result = await pool.query(
       `SELECT 
          cs.*,
@@ -426,11 +424,12 @@ export const getExpiringServices = async (req, res) => {
        FROM client_services cs
        LEFT JOIN clients c ON cs.client_id = c.id
        WHERE cs.status = 'active'
+       AND cs.company_id = $1
        AND cs.expiry_date IS NOT NULL
        AND cs.expiry_date <= NOW() + INTERVAL '${parseInt(days)} days'
        AND cs.expiry_date >= NOW()
        ORDER BY cs.expiry_date ASC`,
-      []
+      [req.companyId]
     );
 
     res.json({ services: result.rows });

@@ -1,3 +1,6 @@
+// controllers/expenses.controller.js
+// UPDATED: All queries now filter by company_id
+
 import { pool } from "../db.js";
 
 export const createExpense = async (req, res) => {
@@ -10,15 +13,16 @@ export const createExpense = async (req, res) => {
     amount_spent,
     currency = "₹",
     notes,
-    receipt_images,  // ✅ Changed from receipt_urls to receipt_images
+    receipt_images,
     client_id
   } = req.body;
 
+  // ✅ UPDATED: Include company_id in INSERT
   const result = await pool.query(
     `INSERT INTO trip_expenses
     (user_id, start_location, end_location, travel_date, distance_km,
-     transport_mode, amount_spent, currency, notes, receipt_images, client_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     transport_mode, amount_spent, currency, notes, receipt_images, client_id, company_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     RETURNING *`,
     [
       req.user.id,
@@ -30,8 +34,9 @@ export const createExpense = async (req, res) => {
       amount_spent,
       currency,
       notes,
-      receipt_images || [],  // ✅ Array of base64 strings
-      client_id || null
+      receipt_images || [],
+      client_id || null,
+      req.companyId
     ]
   );
 
@@ -42,11 +47,12 @@ export const createExpense = async (req, res) => {
 };
 
 export const getMyTotal = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
     `SELECT COALESCE(SUM(amount_spent), 0) as total_amount
      FROM trip_expenses
-     WHERE user_id = $1`,
-    [req.user.id]
+     WHERE user_id = $1 AND company_id = $2`,
+    [req.user.id, req.companyId]
   );
 
   res.json({
@@ -57,28 +63,29 @@ export const getMyTotal = async (req, res) => {
 export const getMyExpenses = async (req, res) => {
   const { startDate, endDate, transportMode, clientId } = req.query;
 
-  let query = `SELECT * FROM trip_expenses WHERE user_id = $1`;
-  const params = [req.user.id];
-  let count = 1;
+  // ✅ UPDATED: Add company_id filter
+  let query = `SELECT * FROM trip_expenses WHERE user_id = $1 AND company_id = $2`;
+  const params = [req.user.id, req.companyId];
+  let count = 2;
 
   if (startDate) {
     count++;
-    query += ` AND travel_date >= ${count}`;
+    query += ` AND travel_date >= $${count}`;
     params.push(startDate);
   }
   if (endDate) {
     count++;
-    query += ` AND travel_date <= ${count}`;
+    query += ` AND travel_date <= $${count}`;
     params.push(endDate);
   }
   if (transportMode) {
     count++;
-    query += ` AND transport_mode = ${count}`;
+    query += ` AND transport_mode = $${count}`;
     params.push(transportMode);
   }
   if (clientId) {
     count++;
-    query += ` AND client_id = ${count}`;
+    query += ` AND client_id = $${count}`;
     params.push(clientId);
   }
 
@@ -94,7 +101,6 @@ export const getMyExpenses = async (req, res) => {
 };
 
 export const uploadReceipt = async (req, res) => {
-  // You can remove this entirely OR keep it for backward compatibility
   const { imageData, fileName } = req.body;
 
   if (!imageData) {
@@ -103,16 +109,16 @@ export const uploadReceipt = async (req, res) => {
 
   // Just return the base64 data back - no actual upload needed
   res.json({ 
-    imageData: imageData,  // Return the base64 string
+    imageData: imageData,
     fileName: fileName 
   });
 };
 
-
 export const getExpenseById = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
-    `SELECT * FROM trip_expenses WHERE id = $1 AND user_id = $2`,
-    [req.params.id, req.user.id]
+    `SELECT * FROM trip_expenses WHERE id = $1 AND user_id = $2 AND company_id = $3`,
+    [req.params.id, req.user.id, req.companyId]
   );
 
   if (result.rows.length === 0) {
@@ -136,6 +142,7 @@ export const updateExpense = async (req, res) => {
     client_id
   } = req.body;
 
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
     `UPDATE trip_expenses
      SET start_location = $1,
@@ -149,7 +156,7 @@ export const updateExpense = async (req, res) => {
          receipt_images = $9,
          client_id = $10,
          updated_at = NOW()
-     WHERE id = $11 AND user_id = $12
+     WHERE id = $11 AND user_id = $12 AND company_id = $13
      RETURNING *`,
     [
       start_location,
@@ -163,7 +170,8 @@ export const updateExpense = async (req, res) => {
       receipt_images || [],
       client_id || null,
       req.params.id,
-      req.user.id
+      req.user.id,
+      req.companyId
     ]
   );
 
@@ -178,9 +186,10 @@ export const updateExpense = async (req, res) => {
 };
 
 export const deleteExpense = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
-    `DELETE FROM trip_expenses WHERE id = $1 AND user_id = $2 RETURNING id`,
-    [req.params.id, req.user.id]
+    `DELETE FROM trip_expenses WHERE id = $1 AND user_id = $2 AND company_id = $3 RETURNING id`,
+    [req.params.id, req.user.id, req.companyId]
   );
 
   if (result.rows.length === 0) {

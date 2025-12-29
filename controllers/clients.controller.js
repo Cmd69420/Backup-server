@@ -1,3 +1,6 @@
+// controllers/clients.controller.js
+// UPDATED: All queries now filter by company_id
+
 import xlsx from "xlsx";
 import { pool } from "../db.js";
 import { getCoordinatesFromPincode, getCoordinatesFromAddress, getPincodeFromCoordinates } from "../services/geocoding.service.js";
@@ -104,16 +107,17 @@ export const uploadExcel = async (req, res) => {
         }
       }
 
-      // Check for duplicates (user-specific)
+      // ✅ UPDATED: Check for duplicates WITHIN THE SAME COMPANY
       let duplicateCheck = { rows: [] };
       
       if (email) {
         duplicateCheck = await client.query(
           `SELECT id FROM clients 
            WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) 
-           AND created_by = $2 
+           AND created_by = $2
+           AND company_id = $3
            LIMIT 1`,
-          [email, req.user.id]
+          [email, req.user.id, req.companyId] // ← Added company_id
         );
       }
       
@@ -125,8 +129,9 @@ export const uploadExcel = async (req, res) => {
             `SELECT id FROM clients 
              WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = $1 
              AND created_by = $2
+             AND company_id = $3
              LIMIT 1`,
-            [cleanPhone, req.user.id]
+            [cleanPhone, req.user.id, req.companyId] // ← Added company_id
           );
         }
       }
@@ -140,16 +145,18 @@ export const uploadExcel = async (req, res) => {
              WHERE LOWER(TRIM(REGEXP_REPLACE(name, '[^a-zA-Z0-9\\s]', '', 'g'))) = $1 
              AND pincode = $2
              AND created_by = $3
+             AND company_id = $4
              LIMIT 1`,
-            [cleanName, pincode, req.user.id]
+            [cleanName, pincode, req.user.id, req.companyId] // ← Added company_id
           );
         } else {
           duplicateCheck = await client.query(
             `SELECT id FROM clients 
              WHERE LOWER(TRIM(REGEXP_REPLACE(name, '[^a-zA-Z0-9\\s]', '', 'g'))) = $1
              AND created_by = $2
+             AND company_id = $3
              LIMIT 1`,
-            [cleanName, req.user.id]
+            [cleanName, req.user.id, req.companyId] // ← Added company_id
           );
         }
       }
@@ -170,19 +177,20 @@ export const uploadExcel = async (req, res) => {
              notes = COALESCE($7, notes),
              status = $8,
              updated_at = NOW()
-           WHERE id = $9 AND created_by = $10`,
-          [email, phone, address, latitude, longitude, pincode, note, status, existingId, req.user.id]
+           WHERE id = $9 AND created_by = $10 AND company_id = $11`,
+          [email, phone, address, latitude, longitude, pincode, note, status, existingId, req.user.id, req.companyId] // ← Added company_id
         );
 
         updated++;
         console.log(`🔄 Updated: ${name} (ID: ${existingId})`);
         
       } else {
+        // ✅ UPDATED: Include company_id in INSERT
         await client.query(
           `INSERT INTO clients
-           (name, email, phone, address, latitude, longitude, status, notes, created_by, source, pincode)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-          [name, email, phone, address, latitude, longitude, status, note, req.user.id, source, pincode]
+           (name, email, phone, address, latitude, longitude, status, notes, created_by, source, pincode, company_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [name, email, phone, address, latitude, longitude, status, note, req.user.id, source, pincode, req.companyId] // ← Added company_id
         );
 
         imported++;
@@ -234,11 +242,12 @@ export const createClient = async (req, res) => {
     pincode = await getPincodeFromCoordinates(latitude, longitude);
   }
 
+  // ✅ UPDATED: Include company_id in INSERT
   const result = await pool.query(
-    `INSERT INTO clients (name, email, phone, address, latitude, longitude, status, notes, pincode, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    `INSERT INTO clients (name, email, phone, address, latitude, longitude, status, notes, pincode, created_by, company_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
-    [name, email || null, phone || null, address || null, latitude || null, longitude || null, status || "active", notes || null, pincode, req.user.id]
+    [name, email || null, phone || null, address || null, latitude || null, longitude || null, status || "active", notes || null, pincode, req.user.id, req.companyId] // ← Added company_id
   );
 
   console.log(`✅ Client created: ${name} (Pincode: ${pincode || 'N/A'})`);
@@ -248,9 +257,6 @@ export const createClient = async (req, res) => {
     client: result.rows[0],
   });
 };
-
-// controllers/clients.controller.js
-// ✅ SIMPLIFIED VERSION - Smart auto-detection
 
 export const getClients = async (req, res) => {
   const { 
@@ -263,32 +269,30 @@ export const getClients = async (req, res) => {
   
   const offset = (page - 1) * limit;
 
-  console.log(`👤 Fetching clients for user: ${req.user.id} | Mode: ${searchMode} | Search: ${search}`);
+  console.log(`👤 Fetching clients for user: ${req.user.id} | Company: ${req.companyId} | Mode: ${searchMode}`);
 
-  // ✅ REMOTE MODE - Smart search with auto-detection
+  // ✅ UPDATED: Add company filter to all queries
   if (searchMode === 'remote') {
     console.log(`🌐 Remote search mode`);
 
     let query = `
       SELECT *
       FROM clients
-      WHERE (created_by IS NULL OR created_by = $1)
+      WHERE company_id = $1
+      AND (created_by IS NULL OR created_by = $2)
     `;
-    const params = [req.user.id];
-    let paramCount = 1;
+    const params = [req.companyId, req.user.id]; // ← Added company_id filter
+    let paramCount = 2;
 
-    // ✅ Smart detection: Pincode (numbers only) vs Location/Name (has text)
     if (search && search.trim()) {
       paramCount++;
       
-      // Check if search is all numbers (pincode)
       if (/^\d+$/.test(search.trim())) {
         console.log(`🔢 Detected pincode search: ${search}`);
         query += ` AND pincode = $${paramCount}`;
         params.push(search.trim());
       } else {
         console.log(`📝 Detected text search: ${search}`);
-        // Search in name, address (city/state), email, phone
         query += ` AND (
           name ILIKE $${paramCount} OR 
           address ILIKE $${paramCount} OR
@@ -305,16 +309,15 @@ export const getClients = async (req, res) => {
       params.push(status);
     }
 
-    // ✅ Return clients WITH coordinates for distance sorting on client-side
     query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(parseInt(limit), parseInt(offset));
 
     const result = await pool.query(query, params);
 
     // Count query
-    let countQuery = "SELECT COUNT(*) FROM clients WHERE (created_by IS NULL OR created_by = $1)";
-    const countParams = [req.user.id];
-    let countParamIndex = 1;
+    let countQuery = "SELECT COUNT(*) FROM clients WHERE company_id = $1 AND (created_by IS NULL OR created_by = $2)";
+    const countParams = [req.companyId, req.user.id]; // ← Added company_id filter
+    let countParamIndex = 2;
 
     if (search && search.trim()) {
       countParamIndex++;
@@ -358,7 +361,7 @@ export const getClients = async (req, res) => {
     });
   }
 
-  // ✅ LOCAL MODE - Filter by user's pincode
+  // LOCAL MODE - Filter by user's pincode
   const userPincode = (await pool.query("SELECT pincode FROM users WHERE id = $1", [req.user.id])).rows[0]?.pincode;
   
   if (!userPincode) {
@@ -370,14 +373,16 @@ export const getClients = async (req, res) => {
 
   console.log(`📍 Local search mode - filtering by pincode: ${userPincode}`);
 
+  // ✅ UPDATED: Add company filter
   let query = `
     SELECT *
     FROM clients
     WHERE pincode = $1
-    AND (created_by IS NULL OR created_by = $2)
+    AND company_id = $2
+    AND (created_by IS NULL OR created_by = $3)
   `;
-  const params = [userPincode, req.user.id];
-  let paramCount = 2;
+  const params = [userPincode, req.companyId, req.user.id]; // ← Added company_id filter
+  let paramCount = 3;
 
   if (status) {
     paramCount++;
@@ -391,15 +396,14 @@ export const getClients = async (req, res) => {
     params.push(`%${search}%`);
   }
 
-  // ✅ Return WITH coordinates for distance sorting on client-side
   query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
   params.push(parseInt(limit), parseInt(offset));
 
   const result = await pool.query(query, params);
 
-  let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND (created_by IS NULL OR created_by = $2)";
-  const countParams = [userPincode, req.user.id];
-  let countParamIndex = 2;
+  let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND company_id = $2 AND (created_by IS NULL OR created_by = $3)";
+  const countParams = [userPincode, req.companyId, req.user.id]; // ← Added company_id filter
+  let countParamIndex = 3;
 
   if (status) {
     countParamIndex++;
@@ -433,9 +437,10 @@ export const getClients = async (req, res) => {
 };
 
 export const getClientById = async (req, res) => {
+  // ✅ UPDATED: Add company filter
   const result = await pool.query(
-    "SELECT * FROM clients WHERE id = $1",
-    [req.params.id]
+    "SELECT * FROM clients WHERE id = $1 AND company_id = $2",
+    [req.params.id, req.companyId] // ← Added company_id filter
   );
 
   if (result.rows.length === 0) {
@@ -453,12 +458,13 @@ export const updateClient = async (req, res) => {
     pincode = await getPincodeFromCoordinates(latitude, longitude);
   }
 
+  // ✅ UPDATED: Add company filter
   const result = await pool.query(
     `UPDATE clients 
      SET name = $1, email = $2, phone = $3, address = $4, latitude = $5, longitude = $6, status = $7, notes = $8, pincode = $9
-     WHERE id = $10
+     WHERE id = $10 AND company_id = $11
      RETURNING *`,
-    [name, email, phone, address, latitude, longitude, status, notes, pincode, req.params.id]
+    [name, email, phone, address, latitude, longitude, status, notes, pincode, req.params.id, req.companyId] // ← Added company_id filter
   );
 
   if (result.rows.length === 0) {
@@ -472,9 +478,10 @@ export const updateClient = async (req, res) => {
 };
 
 export const deleteClient = async (req, res) => {
+  // ✅ UPDATED: Add company filter
   const result = await pool.query(
-    "DELETE FROM clients WHERE id = $1 RETURNING id",
-    [req.params.id]
+    "DELETE FROM clients WHERE id = $1 AND company_id = $2 RETURNING id",
+    [req.params.id, req.companyId] // ← Added company_id filter
   );
 
   if (result.rows.length === 0) {

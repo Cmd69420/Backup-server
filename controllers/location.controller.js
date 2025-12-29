@@ -1,3 +1,6 @@
+// controllers/location.controller.js
+// UPDATED: All queries now filter by company_id
+
 import { pool } from "../db.js";
 import { getPincodeFromCoordinates } from "../services/geocoding.service.js";
 
@@ -12,11 +15,12 @@ export const createLocationLog = async (req, res) => {
 
   const pincode = await getPincodeFromCoordinates(latitude, longitude);
 
+  // ✅ UPDATED: Include company_id in INSERT
   const result = await pool.query(
-    `INSERT INTO location_logs (user_id, latitude, longitude, accuracy, activity, notes, pincode, battery)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO location_logs (user_id, latitude, longitude, accuracy, activity, notes, pincode, battery, company_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
-    [req.user.id, latitude, longitude, accuracy || null, activity || null, notes || null, pincode, battery || null]
+    [req.user.id, latitude, longitude, accuracy || null, activity || null, notes || null, pincode, battery || null, req.companyId]
   );
 
   if (pincode) {
@@ -53,9 +57,10 @@ export const getLocationLogs = async (req, res) => {
   const { startDate, endDate, page = 1, limit = 50 } = req.query;
   const offset = (page - 1) * limit;
 
-  let query = "SELECT * FROM location_logs WHERE user_id = $1";
-  const params = [req.user.id];
-  let paramCount = 1;
+  // ✅ UPDATED: Add company_id filter
+  let query = "SELECT * FROM location_logs WHERE user_id = $1 AND company_id = $2";
+  const params = [req.user.id, req.companyId];
+  let paramCount = 2;
 
   if (startDate) {
     paramCount++;
@@ -96,14 +101,16 @@ export const getLocationLogs = async (req, res) => {
 };
 
 export const getClockIn = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter
   const result = await pool.query(
     `SELECT latitude, longitude, timestamp
      FROM location_logs
      WHERE user_id = $1
+       AND company_id = $2
        AND DATE(timestamp) = CURRENT_DATE
      ORDER BY timestamp ASC
      LIMIT 1`,
-    [req.user.id]
+    [req.user.id, req.companyId]
   );
 
   if (result.rows.length === 0) {

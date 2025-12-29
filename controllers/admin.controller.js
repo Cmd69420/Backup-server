@@ -1,3 +1,7 @@
+// controllers/admin.controller.js - PART 1
+// UPDATED: All queries now filter by company_id
+// Super admins can view all companies, regular admins only their company
+
 import { pool } from "../db.js";
 import bcrypt from "bcryptjs";
 
@@ -5,9 +9,17 @@ export const getAllClients = async (req, res) => {
   const { status, search, page = 1, limit = 1000 } = req.query;
   const offset = (page - 1) * limit;
 
+  // ✅ UPDATED: Add company_id filter (unless super admin)
   let query = "SELECT * FROM clients WHERE 1=1";
   const params = [];
   let paramCount = 0;
+
+  // Super admin can view all companies, regular admin only their company
+  if (!req.isSuperAdmin) {
+    paramCount++;
+    query += ` AND company_id = $${paramCount}`;
+    params.push(req.companyId);
+  }
 
   if (status) {
     paramCount++;
@@ -26,10 +38,16 @@ export const getAllClients = async (req, res) => {
 
   const result = await pool.query(query, params);
   
-  // Build count query with same filters
+  // ✅ UPDATED: Add company_id filter to count query
   let countQuery = "SELECT COUNT(*) FROM clients WHERE 1=1";
   const countParams = [];
   let countParamCount = 0;
+
+  if (!req.isSuperAdmin) {
+    countParamCount++;
+    countQuery += ` AND company_id = $${countParamCount}`;
+    countParams.push(req.companyId);
+  }
 
   if (status) {
     countParamCount++;
@@ -62,15 +80,24 @@ export const getAllClients = async (req, res) => {
 export const getAllUsers = async (req, res) => {
   const { limit = 1000 } = req.query;
   
-  const result = await pool.query(
-    `SELECT u.id, u.email, u.created_at, u.pincode,
-            p.full_name, p.department, p.work_hours_start, p.work_hours_end
-     FROM users u
-     LEFT JOIN profiles p ON u.id = p.user_id
-     ORDER BY u.created_at DESC
-     LIMIT $1`,
-    [limit]
-  );
+  // ✅ UPDATED: Add company_id filter (unless super admin)
+  let query = `
+    SELECT u.id, u.email, u.created_at, u.pincode, u.is_admin, u.is_super_admin,
+           p.full_name, p.department, p.work_hours_start, p.work_hours_end
+    FROM users u
+    LEFT JOIN profiles p ON u.id = p.user_id
+  `;
+  const params = [];
+  
+  if (!req.isSuperAdmin) {
+    query += ` WHERE u.company_id = $1`;
+    params.push(req.companyId);
+  }
+  
+  query += ` ORDER BY u.created_at DESC LIMIT $${params.length + 1}`;
+  params.push(limit);
+  
+  const result = await pool.query(query, params);
 
   console.log(`✅ Admin fetched ${result.rows.length} users`);
 
@@ -78,6 +105,10 @@ export const getAllUsers = async (req, res) => {
 };
 
 export const getAnalytics = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter to all analytics queries
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $1';
+  const params = req.isSuperAdmin ? [] : [req.companyId];
+
   // Basic client stats
   const clientStats = await pool.query(`
     SELECT 
@@ -86,17 +117,27 @@ export const getAnalytics = async (req, res) => {
       COUNT(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 END) as clients_with_location,
       COUNT(DISTINCT pincode) FILTER (WHERE pincode IS NOT NULL) as unique_pincodes
     FROM clients
-  `);
+    WHERE 1=1 ${companyFilter}
+  `, params);
 
-  const userStats = await pool.query(`SELECT COUNT(*) as total_users FROM users`);
-  const locationStats = await pool.query(`SELECT COUNT(*) as total_logs FROM location_logs`);
+  const userStats = await pool.query(`
+    SELECT COUNT(*) as total_users 
+    FROM users 
+    WHERE 1=1 ${companyFilter}
+  `, params);
+
+  const locationStats = await pool.query(`
+    SELECT COUNT(*) as total_logs 
+    FROM location_logs
+    WHERE 1=1 ${companyFilter}
+  `, params);
 
   // Calculate GPS coverage percentage
   const totalClients = parseInt(clientStats.rows[0].total_clients);
   const withCoords = parseInt(clientStats.rows[0].clients_with_location);
   const coveragePercent = totalClients > 0 ? ((withCoords / totalClients) * 100).toFixed(1) : 0;
 
-  // NEW: Monthly trends (last 6 months)
+  // Monthly trends (last 6 months)
   const trendsData = await pool.query(`
     SELECT 
       TO_CHAR(DATE_TRUNC('month', created_at), 'Mon') as month,
@@ -105,69 +146,73 @@ export const getAnalytics = async (req, res) => {
       COUNT(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 END) as "withLocation"
     FROM clients
     WHERE created_at >= NOW() - INTERVAL '6 months'
+    ${companyFilter}
     GROUP BY DATE_TRUNC('month', created_at)
     ORDER BY DATE_TRUNC('month', created_at)
-  `);
+  `, params);
 
-  // NEW: Top 5 areas by client count
+  // Top 5 areas by client count
   const topAreas = await pool.query(`
     SELECT 
       pincode as area,
       COUNT(*) as clients
     FROM clients
     WHERE pincode IS NOT NULL
+    ${companyFilter}
     GROUP BY pincode
     ORDER BY clients DESC
     LIMIT 5
-  `);
+  `, params);
 
-  // NEW: User leaderboard - Multiple metrics combined
-  // We'll rank users by: clients created + meetings held + location logs
+  // User leaderboard
   const userLeaderboard = await pool.query(`
-  SELECT
-    u.id,
-    COALESCE(p.full_name, u.email) AS name,
-    COUNT(DISTINCT c.id) AS clients_created,
-    COUNT(DISTINCT m.id) AS meetings_held
-  FROM users u
-  LEFT JOIN profiles p ON p.user_id = u.id
-  LEFT JOIN clients c ON c.created_by = u.id
-  LEFT JOIN meetings m ON m.user_id = u.id
-  WHERE u.is_admin = $1
-  GROUP BY u.id, p.full_name, u.email
-  ORDER BY meetings_held DESC, clients_created DESC
-  LIMIT 5
-`, [false]);
+    SELECT
+      u.id,
+      COALESCE(p.full_name, u.email) AS name,
+      COUNT(DISTINCT c.id) AS clients_created,
+      COUNT(DISTINCT m.id) AS meetings_held
+    FROM users u
+    LEFT JOIN profiles p ON p.user_id = u.id
+    LEFT JOIN clients c ON c.created_by = u.id ${!req.isSuperAdmin ? 'AND c.company_id = $1' : ''}
+    LEFT JOIN meetings m ON m.user_id = u.id ${!req.isSuperAdmin ? 'AND m.company_id = $1' : ''}
+    WHERE u.is_admin = false
+    ${!req.isSuperAdmin ? 'AND u.company_id = $1' : ''}
+    GROUP BY u.id, p.full_name, u.email
+    ORDER BY meetings_held DESC, clients_created DESC
+    LIMIT 5
+  `, params);
 
-
-  // NEW: Recent activity stats (last 30 days)
+  // Recent activity stats (last 30 days)
   const recentActivity = await pool.query(`
-  SELECT
-    (SELECT COUNT(*) 
-     FROM meetings 
-     WHERE created_at >= NOW() - INTERVAL '30 days') AS meetings_last_month,
+    SELECT
+      (SELECT COUNT(*) 
+       FROM meetings 
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+       ${companyFilter}) AS meetings_last_month,
 
-    (SELECT COUNT(*) 
-     FROM trip_expenses 
-     WHERE created_at >= NOW() - INTERVAL '30 days') AS expenses_last_month,
+      (SELECT COUNT(*) 
+       FROM trip_expenses 
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+       ${companyFilter}) AS expenses_last_month,
 
-    (SELECT COUNT(*) 
-     FROM clients 
-     WHERE created_at >= NOW() - INTERVAL '30 days') AS new_clients_last_month
-`);
+      (SELECT COUNT(*) 
+       FROM clients 
+       WHERE created_at >= NOW() - INTERVAL '30 days'
+       ${companyFilter}) AS new_clients_last_month
+  `, params);
 
-
-  // NEW: Inactive clients (no meetings in 30 days)
+  // Inactive clients (no meetings in 30 days)
   const inactiveClients = await pool.query(`
     SELECT COUNT(*) as inactive_count
     FROM clients c
     WHERE c.status = 'active'
+      ${companyFilter}
       AND NOT EXISTS (
         SELECT 1 FROM meetings m 
         WHERE m.client_id = c.id 
         AND m.created_at >= NOW() - INTERVAL '30 days'
       )
-  `);
+  `, params);
 
   console.log("✅ Admin analytics fetched successfully");
 
@@ -190,23 +235,44 @@ export const getAnalytics = async (req, res) => {
     leaderboard: userLeaderboard.rows
   });
 };
+
 export const getUserLocationLogs = async (req, res) => {
   const { page = 1, limit = 200 } = req.query;
   const offset = (page - 1) * limit;
   const userId = req.params.userId;
 
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  if (!req.isSuperAdmin) {
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      [userId, req.companyId]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "UserNotFound" });
+    }
+  }
+
+  // ✅ UPDATED: Add company_id filter
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $3';
+  const params = [userId, limit, offset];
+  if (!req.isSuperAdmin) {
+    params.splice(2, 0, req.companyId);
+  }
+
   const result = await pool.query(
     `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
      FROM location_logs
      WHERE user_id = $1
+     ${companyFilter}
      ORDER BY timestamp DESC
-     LIMIT $2 OFFSET $3`,
-    [userId, limit, offset]
+     LIMIT $2 OFFSET $${!req.isSuperAdmin ? 4 : 3}`,
+    params
   );
 
   const countResult = await pool.query(
-    "SELECT COUNT(*) FROM location_logs WHERE user_id = $1",
-    [userId]
+    `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 ${companyFilter}`,
+    req.isSuperAdmin ? [userId] : [userId, req.companyId]
   );
 
   console.log(`✅ Fetched ${result.rows.length} logs for user ${userId}`);
@@ -225,13 +291,33 @@ export const getUserLocationLogs = async (req, res) => {
 export const getClockStatus = async (req, res) => {
   const { userId } = req.params;
 
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  if (!req.isSuperAdmin) {
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      [userId, req.companyId]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "UserNotFound" });
+    }
+  }
+
+  // ✅ UPDATED: Add company_id filter
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
+  const params = [userId];
+  if (!req.isSuperAdmin) {
+    params.push(req.companyId);
+  }
+
   const result = await pool.query(`
     SELECT timestamp
     FROM location_logs
     WHERE user_id = $1
+    ${companyFilter}
     ORDER BY timestamp DESC
     LIMIT 1
-  `, [userId]);
+  `, params);
 
   if (result.rows.length === 0) {
     return res.json({ clocked_in: false, last_seen: null });
@@ -241,7 +327,6 @@ export const getClockStatus = async (req, res) => {
   const now = new Date();
   const diffMinutes = (now - lastSeen) / (1000 * 60);
   
-  // Consider active if logged location within last 5 minutes
   const isActive = diffMinutes <= 5;
 
   res.json({
@@ -251,30 +336,53 @@ export const getClockStatus = async (req, res) => {
 };
 
 export const getExpensesSummary = async (req, res) => {
+  // ✅ UPDATED: Add company_id filter
+  const companyFilter = req.isSuperAdmin ? '' : 'WHERE u.company_id = $1';
+  const params = req.isSuperAdmin ? [] : [req.companyId];
+
   const result = await pool.query(`
     SELECT 
       u.id,
       COALESCE(SUM(e.amount_spent), 0) AS total_expense
     FROM users u
-    LEFT JOIN trip_expenses e ON e.user_id = u.id
+    LEFT JOIN trip_expenses e ON e.user_id = u.id ${!req.isSuperAdmin ? 'AND e.company_id = $1' : ''}
+    ${companyFilter}
     GROUP BY u.id
     ORDER BY u.id
-  `);
+  `, params);
 
   console.log(`✅ Fetched expense summary for ${result.rows.length} users`);
 
   res.json({ summary: result.rows });
 };
-
 export const getUserMeetings = async (req, res) => {
   const userId = req.params.userId;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const offset = (page - 1) * limit;
 
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  if (!req.isSuperAdmin) {
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      [userId, req.companyId]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "UserNotFound" });
+    }
+  }
+
+  // ✅ UPDATED: Add company_id filter
+  const companyFilter = req.isSuperAdmin ? '' : 'AND m.company_id = $4';
+  const params = [userId, limit, offset];
+  if (!req.isSuperAdmin) {
+    params.push(req.companyId);
+  }
+
   const totalCountResult = await pool.query(
-    `SELECT COUNT(*) FROM meetings WHERE user_id = $1`,
-    [userId]
+    `SELECT COUNT(*) FROM meetings WHERE user_id = $1 ${companyFilter}`,
+    req.isSuperAdmin ? [userId] : [userId, req.companyId]
   );
   const totalCount = parseInt(totalCountResult.rows[0].count);
 
@@ -301,9 +409,10 @@ export const getUserMeetings = async (req, res) => {
      FROM meetings m
      LEFT JOIN clients c ON m.client_id = c.id
      WHERE m.user_id = $1
+     ${companyFilter}
      ORDER BY m.start_time DESC
      LIMIT $2 OFFSET $3`,
-    [userId, limit, offset]
+    params
   );
 
   console.log(`Fetched ${result.rows.length} meetings for user ${userId}`);
@@ -325,9 +434,28 @@ export const getUserExpenses = async (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
   const offset = (page - 1) * limit;
 
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  if (!req.isSuperAdmin) {
+    const userCheck = await pool.query(
+      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      [userId, req.companyId]
+    );
+    
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: "UserNotFound" });
+    }
+  }
+
+  // ✅ UPDATED: Add company_id filter
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $4';
+  const params = [userId, limit, offset];
+  if (!req.isSuperAdmin) {
+    params.push(req.companyId);
+  }
+
   const totalResult = await pool.query(
-    `SELECT COUNT(*) FROM trip_expenses WHERE user_id = $1`,
-    [userId]
+    `SELECT COUNT(*) FROM trip_expenses WHERE user_id = $1 ${companyFilter}`,
+    req.isSuperAdmin ? [userId] : [userId, req.companyId]
   );
   const total = parseInt(totalResult.rows[0].count);
 
@@ -343,15 +471,16 @@ export const getUserExpenses = async (req, res) => {
        amount_spent AS "amountSpent",
        currency,
        notes,
-       receipt_urls AS "receiptUrls",
+       receipt_images AS "receiptImages",
        client_id AS "clientId",
        created_at AS "createdAt",
        updated_at AS "updatedAt"
      FROM trip_expenses
      WHERE user_id = $1
+     ${companyFilter}
      ORDER BY travel_date DESC
      LIMIT $2 OFFSET $3`,
-    [userId, limit, offset]
+    params
   );
 
   res.json({
@@ -368,24 +497,33 @@ export const getUserExpenses = async (req, res) => {
 export const checkAdminStatus = (req, res) => {
   res.json({ 
     isAdmin: req.user.isAdmin || false,
+    isSuperAdmin: req.user.isSuperAdmin || false,
     userId: req.user.id,
-    email: req.user.email
+    email: req.user.email,
+    companyId: req.user.companyId
   });
 };
-
-// Add these functions to your existing admin.controller.js
 
 // Get single user details
 export const getUserDetails = async (req, res) => {
   const { userId } = req.params;
 
+  // ✅ UPDATED: Add company_id filter (unless super admin)
+  const companyFilter = req.isSuperAdmin ? '' : 'AND u.company_id = $2';
+  const params = [userId];
+  if (!req.isSuperAdmin) {
+    params.push(req.companyId);
+  }
+
   const result = await pool.query(
-    `SELECT u.id, u.email, u.is_admin, u.created_at, u.pincode,
-            p.full_name, p.department, p.work_hours_start, p.work_hours_end
+    `SELECT u.id, u.email, u.is_admin, u.is_super_admin, u.created_at, u.pincode, u.company_id,
+            p.full_name, p.department, p.work_hours_start, p.work_hours_end,
+            c.name as company_name, c.subdomain as company_subdomain
      FROM users u
      LEFT JOIN profiles p ON u.id = p.user_id
-     WHERE u.id = $1`,
-    [userId]
+     LEFT JOIN companies c ON u.company_id = c.id
+     WHERE u.id = $1 ${companyFilter}`,
+    params
   );
 
   if (result.rows.length === 0) {
@@ -415,11 +553,31 @@ export const createUser = async (req, res) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
   
+  // ✅ UPDATED: Assign new user to admin's company (super admin can override)
+  const targetCompanyId = req.body.companyId || req.companyId;
+  
+  // ✅ UPDATED: Only super admin can assign to different company
+  if (targetCompanyId !== req.companyId && !req.isSuperAdmin) {
+    return res.status(403).json({ 
+      error: "Forbidden",
+      message: "Only super admins can assign users to different companies" 
+    });
+  }
+
+  // ✅ UPDATED: Only super admin can create admins
+  if (isAdmin && !req.isSuperAdmin) {
+    return res.status(403).json({ 
+      error: "Forbidden",
+      message: "Only super admins can create admin users" 
+    });
+  }
+
+  // ✅ UPDATED: Include company_id in INSERT
   const userResult = await pool.query(
-    `INSERT INTO users (email, password, is_admin)
-     VALUES ($1, $2, $3)
-     RETURNING id, email, is_admin, created_at`,
-    [email, hashedPassword, isAdmin]
+    `INSERT INTO users (email, password, is_admin, company_id)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, email, is_admin, company_id, created_at`,
+    [email, hashedPassword, isAdmin, targetCompanyId]
   );
 
   const user = userResult.rows[0];
@@ -446,10 +604,28 @@ export const updateUser = async (req, res) => {
   const { userId } = req.params;
   const { email, fullName, department, workHoursStart, workHoursEnd, isAdmin } = req.body;
 
-  // Check if user exists
-  const userCheck = await pool.query("SELECT id FROM users WHERE id = $1", [userId]);
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
+  const checkParams = [userId];
+  if (!req.isSuperAdmin) {
+    checkParams.push(req.companyId);
+  }
+
+  const userCheck = await pool.query(
+    `SELECT id FROM users WHERE id = $1 ${companyFilter}`,
+    checkParams
+  );
+
   if (userCheck.rows.length === 0) {
     return res.status(404).json({ error: "UserNotFound" });
+  }
+
+  // ✅ UPDATED: Only super admin can change admin status
+  if (isAdmin !== undefined && !req.isSuperAdmin) {
+    return res.status(403).json({ 
+      error: "Forbidden",
+      message: "Only super admins can change admin status" 
+    });
   }
 
   // Update users table (email and is_admin)
@@ -459,7 +635,6 @@ export const updateUser = async (req, res) => {
     let paramCount = 0;
 
     if (email !== undefined) {
-      // Check if email is already taken by another user
       const emailCheck = await pool.query(
         "SELECT id FROM users WHERE email = $1 AND id != $2",
         [email, userId]
@@ -514,8 +689,18 @@ export const updateUser = async (req, res) => {
 export const deleteUser = async (req, res) => {
   const { userId } = req.params;
 
-  // Check if user exists
-  const userCheck = await pool.query("SELECT id, email FROM users WHERE id = $1", [userId]);
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
+  const checkParams = [userId];
+  if (!req.isSuperAdmin) {
+    checkParams.push(req.companyId);
+  }
+
+  const userCheck = await pool.query(
+    `SELECT id, email FROM users WHERE id = $1 ${companyFilter}`,
+    checkParams
+  );
+
   if (userCheck.rows.length === 0) {
     return res.status(404).json({ error: "UserNotFound" });
   }
@@ -527,13 +712,7 @@ export const deleteUser = async (req, res) => {
 
   const userEmail = userCheck.rows[0].email;
 
-  // Hard delete - remove user and related data
-  // Delete in order to respect foreign key constraints
-  await pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
-  await pool.query("DELETE FROM location_logs WHERE user_id = $1", [userId]);
-  await pool.query("DELETE FROM meetings WHERE user_id = $1", [userId]);
-  await pool.query("DELETE FROM trip_expenses WHERE user_id = $1", [userId]);
-  await pool.query("DELETE FROM profiles WHERE user_id = $1", [userId]);
+  // Hard delete - CASCADE will handle related data
   await pool.query("DELETE FROM users WHERE id = $1", [userId]);
 
   console.log(`🗑️ Admin deleted user: ${userEmail} (${userId})`);
@@ -549,8 +728,18 @@ export const resetUserPassword = async (req, res) => {
     return res.status(400).json({ error: "PasswordTooShort" });
   }
 
-  // Check if user exists
-  const userCheck = await pool.query("SELECT id, email FROM users WHERE id = $1", [userId]);
+  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
+  const checkParams = [userId];
+  if (!req.isSuperAdmin) {
+    checkParams.push(req.companyId);
+  }
+
+  const userCheck = await pool.query(
+    `SELECT id, email FROM users WHERE id = $1 ${companyFilter}`,
+    checkParams
+  );
+
   if (userCheck.rows.length === 0) {
     return res.status(404).json({ error: "UserNotFound" });
   }

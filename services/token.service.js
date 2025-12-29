@@ -1,3 +1,6 @@
+// services/token.service.js
+// UPDATED: Include company_id in sessions
+
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { pool } from "../db.js";
@@ -17,12 +20,13 @@ export const generateToken = (payload, expiresIn = '7d') => {
  * @param {string} userId 
  * @param {string} token 
  * @param {number} daysValid - Number of days session is valid (default 7)
+ * @param {string} companyId - Company ID (optional for super admins)
  */
-export const createSession = async (userId, token, daysValid = 7) => {
+export const createSession = async (userId, token, daysValid = 7, companyId = null) => {
   await pool.query(
-    `INSERT INTO user_sessions (user_id, token, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '${daysValid} days')`,
-    [userId, token]
+    `INSERT INTO user_sessions (user_id, token, expires_at, company_id)
+     VALUES ($1, $2, NOW() + INTERVAL '${daysValid} days', $3)`,
+    [userId, token, companyId]
   );
   
   console.log(`✅ Session created for user ${userId} - Valid for ${daysValid} days`);
@@ -54,10 +58,10 @@ export const generateResetToken = () => {
  */
 export const saveResetToken = async (email, token) => {
   await pool.query(
-    `INSERT INTO password_resets (email, token, expires_at)
+    `INSERT INTO password_reset_otps (email, otp, expires_at)
      VALUES ($1, $2, NOW() + INTERVAL '1 hour')
      ON CONFLICT (email) 
-     DO UPDATE SET token = $2, expires_at = NOW() + INTERVAL '1 hour'`,
+     DO UPDATE SET otp = $2, expires_at = NOW() + INTERVAL '1 hour', attempts = 0`,
     [email, token]
   );
 };
@@ -68,9 +72,9 @@ export const saveResetToken = async (email, token) => {
 export const validateResetToken = async (token) => {
   const result = await pool.query(
     `SELECT u.id 
-     FROM password_resets pr
+     FROM password_reset_otps pr
      JOIN users u ON u.email = pr.email
-     WHERE pr.token = $1 AND pr.expires_at > NOW()`,
+     WHERE pr.otp = $1 AND pr.expires_at > NOW()`,
     [token]
   );
 
@@ -86,7 +90,7 @@ export const validateResetToken = async (token) => {
  */
 export const clearResetToken = async (userId) => {
   await pool.query(
-    `DELETE FROM password_resets 
+    `DELETE FROM password_reset_otps 
      WHERE email = (SELECT email FROM users WHERE id = $1)`,
     [userId]
   );
