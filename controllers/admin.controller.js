@@ -78,6 +78,7 @@ export const getAllUsers = async (req, res) => {
 };
 
 export const getAnalytics = async (req, res) => {
+  // Basic client stats
   const clientStats = await pool.query(`
     SELECT 
       COUNT(*) as total_clients,
@@ -90,15 +91,105 @@ export const getAnalytics = async (req, res) => {
   const userStats = await pool.query(`SELECT COUNT(*) as total_users FROM users`);
   const locationStats = await pool.query(`SELECT COUNT(*) as total_logs FROM location_logs`);
 
+  // Calculate GPS coverage percentage
+  const totalClients = parseInt(clientStats.rows[0].total_clients);
+  const withCoords = parseInt(clientStats.rows[0].clients_with_location);
+  const coveragePercent = totalClients > 0 ? ((withCoords / totalClients) * 100).toFixed(1) : 0;
+
+  // NEW: Monthly trends (last 6 months)
+  const trendsData = await pool.query(`
+    SELECT 
+      TO_CHAR(DATE_TRUNC('month', created_at), 'Mon') as month,
+      COUNT(*) as clients,
+      COUNT(CASE WHEN status = 'active' THEN 1 END) as active,
+      COUNT(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 END) as "withLocation"
+    FROM clients
+    WHERE created_at >= NOW() - INTERVAL '6 months'
+    GROUP BY DATE_TRUNC('month', created_at)
+    ORDER BY DATE_TRUNC('month', created_at)
+  `);
+
+  // NEW: Top 5 areas by client count
+  const topAreas = await pool.query(`
+    SELECT 
+      pincode as area,
+      COUNT(*) as clients
+    FROM clients
+    WHERE pincode IS NOT NULL
+    GROUP BY pincode
+    ORDER BY clients DESC
+    LIMIT 5
+  `);
+
+  // NEW: User leaderboard - Multiple metrics combined
+  // We'll rank users by: clients created + meetings held + location logs
+  const userLeaderboard = await pool.query(`
+  SELECT
+    u.id,
+    COALESCE(p.full_name, u.email) AS name,
+    COUNT(DISTINCT c.id) AS clients_created,
+    COUNT(DISTINCT m.id) AS meetings_held
+  FROM users u
+  LEFT JOIN profiles p ON p.user_id = u.id
+  LEFT JOIN clients c ON c.created_by = u.id
+  LEFT JOIN meetings m ON m.user_id = u.id
+  WHERE u.is_admin = $1
+  GROUP BY u.id, p.full_name, u.email
+  ORDER BY meetings_held DESC, clients_created DESC
+  LIMIT 5
+`, [false]);
+
+
+  // NEW: Recent activity stats (last 30 days)
+  const recentActivity = await pool.query(`
+  SELECT
+    (SELECT COUNT(*) 
+     FROM meetings 
+     WHERE created_at >= NOW() - INTERVAL '30 days') AS meetings_last_month,
+
+    (SELECT COUNT(*) 
+     FROM trip_expenses 
+     WHERE created_at >= NOW() - INTERVAL '30 days') AS expenses_last_month,
+
+    (SELECT COUNT(*) 
+     FROM clients 
+     WHERE created_at >= NOW() - INTERVAL '30 days') AS new_clients_last_month
+`);
+
+
+  // NEW: Inactive clients (no meetings in 30 days)
+  const inactiveClients = await pool.query(`
+    SELECT COUNT(*) as inactive_count
+    FROM clients c
+    WHERE c.status = 'active'
+      AND NOT EXISTS (
+        SELECT 1 FROM meetings m 
+        WHERE m.client_id = c.id 
+        AND m.created_at >= NOW() - INTERVAL '30 days'
+      )
+  `);
+
   console.log("✅ Admin analytics fetched successfully");
 
   res.json({
-    clients: clientStats.rows[0],
-    users: userStats.rows[0],
-    locations: locationStats.rows[0]
+    stats: {
+      totalClients: totalClients,
+      activeClients: parseInt(clientStats.rows[0].active_clients),
+      withCoordinates: withCoords,
+      uniquePincodes: parseInt(clientStats.rows[0].unique_pincodes),
+      totalUsers: parseInt(userStats.rows[0].total_users),
+      totalLogs: parseInt(locationStats.rows[0].total_logs),
+      coordinatesCoverage: parseFloat(coveragePercent),
+      inactiveClients: parseInt(inactiveClients.rows[0].inactive_count),
+      meetingsLastMonth: parseInt(recentActivity.rows[0].meetings_last_month || 0),
+      expensesLastMonth: parseInt(recentActivity.rows[0].expenses_last_month || 0),
+      newClientsLastMonth: parseInt(recentActivity.rows[0].new_clients_last_month || 0)
+    },
+    trends: trendsData.rows,
+    distribution: topAreas.rows,
+    leaderboard: userLeaderboard.rows
   });
 };
-
 export const getUserLocationLogs = async (req, res) => {
   const { page = 1, limit = 200 } = req.query;
   const offset = (page - 1) * limit;

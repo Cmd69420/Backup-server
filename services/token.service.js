@@ -4,63 +4,42 @@ import { pool } from "../db.js";
 import { JWT_SECRET } from "../config/constants.js";
 
 /**
- * Generate JWT token for a user
+ * Generate JWT token with custom expiry
+ * @param {object} payload - User data to encode
+ * @param {string} expiresIn - Token expiry (e.g., '7d', '1h')
  */
-export const generateToken = (user) => {
-  return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      isAdmin: user.isAdmin || false
-    },
-    JWT_SECRET,
-    { expiresIn: "7d" }
-  );
+export const generateToken = (payload, expiresIn = '7d') => {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn });
 };
 
 /**
- * Verify JWT token
+ * Create session in database
+ * @param {string} userId 
+ * @param {string} token 
+ * @param {number} daysValid - Number of days session is valid (default 7)
  */
-export const verifyToken = (token) => {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch (error) {
-    throw new Error("InvalidToken");
-  }
-};
-
-/**
- * Create a session for a user
- */
-export const createSession = async (userId, token) => {
+export const createSession = async (userId, token, daysValid = 7) => {
   await pool.query(
     `INSERT INTO user_sessions (user_id, token, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+     VALUES ($1, $2, NOW() + INTERVAL '${daysValid} days')`,
     [userId, token]
   );
+  
+  console.log(`✅ Session created for user ${userId} - Valid for ${daysValid} days`);
 };
 
 /**
- * Delete a session (logout)
+ * Delete session (logout)
  */
 export const deleteSession = async (token) => {
-  await pool.query(
-    `DELETE FROM user_sessions WHERE token = $1`,
-    [token]
-  );
+  await pool.query("DELETE FROM user_sessions WHERE token = $1", [token]);
 };
 
 /**
- * Validate if session exists and is not expired
+ * Extract token from Authorization header
  */
-export const validateSession = async (token) => {
-  const result = await pool.query(
-    `SELECT * FROM user_sessions 
-     WHERE token = $1 AND expires_at > NOW()`,
-    [token]
-  );
-
-  return result.rows.length > 0;
+export const extractTokenFromHeader = (authHeader) => {
+  return authHeader && authHeader.split(" ")[1];
 };
 
 /**
@@ -71,26 +50,27 @@ export const generateResetToken = () => {
 };
 
 /**
- * Save password reset token to database
+ * Save reset token with 1 hour expiry
  */
-export const saveResetToken = async (email, resetToken) => {
-  const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
-
+export const saveResetToken = async (email, token) => {
   await pool.query(
-    `UPDATE users 
-     SET reset_token = $1, reset_token_expiry = $2 
-     WHERE email = $3`,
-    [resetToken, resetTokenExpiry, email]
+    `INSERT INTO password_resets (email, token, expires_at)
+     VALUES ($1, $2, NOW() + INTERVAL '1 hour')
+     ON CONFLICT (email) 
+     DO UPDATE SET token = $2, expires_at = NOW() + INTERVAL '1 hour'`,
+    [email, token]
   );
 };
 
 /**
- * Validate reset token
+ * Validate reset token and return userId
  */
 export const validateResetToken = async (token) => {
   const result = await pool.query(
-    `SELECT id FROM users 
-     WHERE reset_token = $1 AND reset_token_expiry > NOW()`,
+    `SELECT u.id 
+     FROM password_resets pr
+     JOIN users u ON u.email = pr.email
+     WHERE pr.token = $1 AND pr.expires_at > NOW()`,
     [token]
   );
 
@@ -106,35 +86,20 @@ export const validateResetToken = async (token) => {
  */
 export const clearResetToken = async (userId) => {
   await pool.query(
-    `UPDATE users 
-     SET reset_token = NULL, reset_token_expiry = NULL 
-     WHERE id = $1`,
+    `DELETE FROM password_resets 
+     WHERE email = (SELECT email FROM users WHERE id = $1)`,
     [userId]
   );
 };
 
 /**
- * Extract token from authorization header
- */
-export const extractTokenFromHeader = (authHeader) => {
-  if (!authHeader) return null;
-  
-  const parts = authHeader.split(" ");
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    return null;
-  }
-  
-  return parts[1];
-};
-
-/**
- * Clean up expired sessions (can be run as a cron job)
+ * Cleanup expired sessions (run periodically)
  */
 export const cleanupExpiredSessions = async () => {
   const result = await pool.query(
-    `DELETE FROM user_sessions WHERE expires_at < NOW() RETURNING id`
+    "DELETE FROM user_sessions WHERE expires_at < NOW()"
   );
   
-  console.log(`🧹 Cleaned up ${result.rows.length} expired sessions`);
-  return result.rows.length;
+  console.log(`🧹 Cleaned up ${result.rowCount} expired sessions`);
+  return result.rowCount;
 };

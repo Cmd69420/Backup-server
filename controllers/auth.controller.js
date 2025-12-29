@@ -1,14 +1,16 @@
 import bcrypt from "bcryptjs";
 import { pool } from "../db.js";
 import * as tokenService from "../services/token.service.js";
+import * as trialService from "../services/trial.service.js";
 
 export const login = async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceId } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "MissingFields" });
   }
 
+  // Validate credentials first
   const result = await pool.query(
     `SELECT u.*, p.full_name, p.department, p.work_hours_start, p.work_hours_end
      FROM users u
@@ -23,18 +25,31 @@ export const login = async (req, res) => {
 
   const user = result.rows[0];
   const validPassword = await bcrypt.compare(password, user.password);
-  
+
   if (!validPassword) {
     return res.status(401).json({ error: "InvalidCredentials" });
   }
 
+  // ✅ DELETE ALL OLD SESSIONS FOR THIS USER
+  const deletedSessions = await pool.query(
+    "DELETE FROM user_sessions WHERE user_id = $1 RETURNING id",
+    [user.id]
+  );
+
+  if (deletedSessions.rows.length > 0) {
+    console.log(`🧹 Deleted ${deletedSessions.rows.length} old sessions for ${user.email}`);
+  }
+
+  // ✅ CREATE NEW SESSION
   const token = tokenService.generateToken({
     id: user.id,
     email: user.email,
     isAdmin: user.is_admin
-  });
+  }, '7d');
 
-  await tokenService.createSession(user.id, token);
+  await tokenService.createSession(user.id, token, 7);
+
+  console.log(`✅ New session created for ${user.email}`);
 
   res.json({
     message: "LoginSuccess",
@@ -57,10 +72,25 @@ export const logout = async (req, res) => {
 };
 
 export const signup = async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, deviceId, fullName } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "MissingFields" });
+  }
+
+  // ✅ CRITICAL: Check trial status before allowing signup
+  if (deviceId) {
+    const trialStatus = await trialService.checkTrialStatus(deviceId);
+
+    if (!trialStatus.isValid) {
+      return res.status(403).json({
+        error: "TRIAL_EXPIRED",
+        message: trialStatus.message || "Trial period has ended",
+        daysRemaining: trialStatus.daysRemaining
+      });
+    }
+
+    console.log(`🍕 Trial Status: ${trialStatus.daysRemaining} days remaining`);
   }
 
   const existing = await pool.query(
@@ -82,20 +112,35 @@ export const signup = async (req, res) => {
   );
 
   const user = userResult.rows[0];
-  await pool.query(`INSERT INTO profiles (user_id) VALUES ($1)`, [user.id]);
 
+  // ✅ Create profile with optional full name
+  await pool.query(
+    `INSERT INTO profiles (user_id, full_name) VALUES ($1, $2)`,
+    [user.id, fullName || null]
+  );
+
+  // ✅ Register device in trial system
+  if (deviceId) {
+    await trialService.registerDevice(deviceId, user.id);
+  }
+
+  // ✅ Generate 7-day token
   const token = tokenService.generateToken({
     id: user.id,
     email: user.email,
     isAdmin: false
-  });
+  }, '7d');
 
-  await tokenService.createSession(user.id, token);
+  await tokenService.createSession(user.id, token, 7);
 
   res.status(201).json({
     message: "SignupSuccess",
     token,
-    user,
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: fullName || null
+    },
   });
 };
 
@@ -161,11 +206,39 @@ export const getProfile = async (req, res) => {
     return res.status(404).json({ error: "UserNotFound" });
   }
 
-  res.json({ user: result.rows[0] });
+  const user = result.rows[0];
+
+  res.json({
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: user.full_name,
+      department: user.department,
+      workHoursStart: user.work_hours_start,
+      workHoursEnd: user.work_hours_end,
+      createdAt: user.created_at
+    }
+  });
 };
 
 export const updateProfile = async (req, res) => {
   const { fullName, department, workHoursStart, workHoursEnd } = req.body;
+
+  if (fullName !== undefined && fullName !== null) {
+    const trimmedName = fullName.trim();
+    if (trimmedName.length < 2) {
+      return res.status(400).json({
+        error: "InvalidName",
+        message: "Name must be at least 2 characters"
+      });
+    }
+    if (trimmedName.length > 50) {
+      return res.status(400).json({
+        error: "InvalidName",
+        message: "Name must be less than 50 characters"
+      });
+    }
+  }
 
   const result = await pool.query(
     `UPDATE profiles 
@@ -179,9 +252,19 @@ export const updateProfile = async (req, res) => {
     return res.status(404).json({ error: "ProfileNotFound" });
   }
 
+  const profile = result.rows[0];
+
   res.json({
     message: "ProfileUpdated",
-    profile: result.rows[0],
+    profile: {
+      id: profile.id,
+      userId: profile.user_id,
+      email: profile.email,
+      fullName: profile.full_name,
+      department: profile.department,
+      workHoursStart: profile.work_hours_start,
+      workHoursEnd: profile.work_hours_end
+    }
   });
 };
 
@@ -203,4 +286,48 @@ export const verifyToken = (req, res) => {
       isAdmin: req.user.isAdmin || false
     }
   });
+};
+
+export const getTrialStatus = async (req, res) => {
+  const { deviceId } = req.query;
+
+  if (!deviceId) {
+    return res.status(400).json({ error: "DeviceIdRequired" });
+  }
+
+  const status = await trialService.checkTrialStatus(deviceId);
+
+  res.json({
+    isValid: status.isValid,
+    daysRemaining: status.daysRemaining,
+    message: status.message,
+    accountsCreated: status.accountsCreated
+  });
+};
+
+export const getTrialStats = async (req, res) => {
+  const stats = await trialService.getTrialStats();
+  res.json(stats);
+};
+
+export const blockDevice = async (req, res) => {
+  const { deviceId } = req.body;
+
+  if (!deviceId) {
+    return res.status(400).json({ error: "DeviceIdRequired" });
+  }
+
+  await trialService.blockDevice(deviceId);
+  res.json({ message: "DeviceBlocked" });
+};
+
+export const unblockDevice = async (req, res) => {
+  const { deviceId } = req.body;
+
+  if (!deviceId) {
+    return res.status(400).json({ error: "DeviceIdRequired" });
+  }
+
+  await trialService.unblockDevice(deviceId);
+  res.json({ message: "DeviceUnblocked" });
 };

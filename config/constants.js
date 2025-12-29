@@ -7,7 +7,8 @@ export const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 export const MIDDLEWARE_TOKEN = process.env.MIDDLEWARE_TOKEN || "tally-middleware-secret-key-12345";
 export const CORS_ORIGIN = [
   "http://localhost:3000", 
-  "https://geo-track-em3s.onrender.com"
+  "https://geo-track-em3s.onrender.com",
+  "https://dashboard-1yda.onrender.com"
 ];
 
 // 🆕 EMAIL CONFIGURATION

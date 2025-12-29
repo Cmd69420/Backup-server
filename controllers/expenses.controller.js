@@ -10,14 +10,14 @@ export const createExpense = async (req, res) => {
     amount_spent,
     currency = "₹",
     notes,
-    receipt_urls,
+    receipt_images,  // ✅ Changed from receipt_urls to receipt_images
     client_id
   } = req.body;
 
   const result = await pool.query(
     `INSERT INTO trip_expenses
     (user_id, start_location, end_location, travel_date, distance_km,
-     transport_mode, amount_spent, currency, notes, receipt_urls, client_id)
+     transport_mode, amount_spent, currency, notes, receipt_images, client_id)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
     RETURNING *`,
     [
@@ -30,7 +30,7 @@ export const createExpense = async (req, res) => {
       amount_spent,
       currency,
       notes,
-      receipt_urls || [],
+      receipt_images || [],  // ✅ Array of base64 strings
       client_id || null
     ]
   );
@@ -94,20 +94,20 @@ export const getMyExpenses = async (req, res) => {
 };
 
 export const uploadReceipt = async (req, res) => {
+  // You can remove this entirely OR keep it for backward compatibility
   const { imageData, fileName } = req.body;
 
   if (!imageData) {
     return res.status(400).json({ error: "ImageRequired" });
   }
 
-  const buffer = Buffer.from(imageData, "base64");
-  const randomName = `${Date.now()}-${fileName || "receipt.jpg"}`;
-  const url = `https://storage.yourdomain.com/receipts/${randomName}`;
-
-  console.log("Receipt upload simulated:", randomName);
-
-  res.json({ url, fileName: randomName });
+  // Just return the base64 data back - no actual upload needed
+  res.json({ 
+    imageData: imageData,  // Return the base64 string
+    fileName: fileName 
+  });
 };
+
 
 export const getExpenseById = async (req, res) => {
   const result = await pool.query(
@@ -132,7 +132,7 @@ export const updateExpense = async (req, res) => {
     amount_spent,
     currency = "₹",
     notes,
-    receipt_urls,
+    receipt_images,
     client_id
   } = req.body;
 
@@ -146,7 +146,7 @@ export const updateExpense = async (req, res) => {
          amount_spent = $6,
          currency = $7,
          notes = $8,
-         receipt_urls = $9,
+         receipt_images = $9,
          client_id = $10,
          updated_at = NOW()
      WHERE id = $11 AND user_id = $12
@@ -160,7 +160,7 @@ export const updateExpense = async (req, res) => {
       amount_spent,
       currency,
       notes,
-      receipt_urls || [],
+      receipt_images || [],
       client_id || null,
       req.params.id,
       req.user.id

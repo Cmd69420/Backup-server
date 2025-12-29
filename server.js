@@ -13,6 +13,8 @@ import meetingRoutes from "./routes/meetings.routes.js";
 import expenseRoutes from "./routes/expenses.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import syncRoutes from "./routes/sync.routes.js";
+import servicesRoutes from './routes/services.routes.js';
+import manualClientRoutes from './routes/manualClient.routes.js';
 
 const app = express();
 
@@ -23,7 +25,10 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 app.options("*", cors());
-app.use(express.json());
+
+// ✅ CHANGE THIS LINE - Add limit parameter
+app.use(express.json({ limit: '10mb' }));  // Changed from: app.use(express.json());
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));  // ✅ Add this line too
 
 // Request logging
 app.use((req, res, next) => {
@@ -48,6 +53,8 @@ app.use("/meetings", meetingRoutes);
 app.use("/expenses", expenseRoutes);
 app.use("/admin", adminRoutes);
 app.use("/api/sync", syncRoutes);
+app.use('/services', servicesRoutes);
+app.use('/api/manual-clients', manualClientRoutes);
 
 // Health check
 app.get("/", (req, res) => {
@@ -70,4 +77,5 @@ app.use(errorHandler);
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📍 Pincode-based filtering enabled`);
+  console.log(`📦 Request body limit: 10mb`);  // ✅ Add confirmation log
 });
