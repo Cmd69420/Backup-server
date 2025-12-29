@@ -208,15 +208,16 @@ export const getProfile = async (req, res) => {
 
   const user = result.rows[0];
 
-  res.json({
+  // ✅ Convert snake_case to camelCase
+  res.json({ 
     user: {
       id: user.id,
       email: user.email,
-      fullName: user.full_name,
+      fullName: user.full_name,           // ✅ Convert to camelCase
       department: user.department,
-      workHoursStart: user.work_hours_start,
-      workHoursEnd: user.work_hours_end,
-      createdAt: user.created_at
+      workHoursStart: user.work_hours_start,  // ✅ Convert to camelCase
+      workHoursEnd: user.work_hours_end,      // ✅ Convert to camelCase
+      createdAt: user.created_at              // ✅ Convert to camelCase
     }
   });
 };
@@ -224,18 +225,19 @@ export const getProfile = async (req, res) => {
 export const updateProfile = async (req, res) => {
   const { fullName, department, workHoursStart, workHoursEnd } = req.body;
 
+  // ✅ Validate name if provided
   if (fullName !== undefined && fullName !== null) {
     const trimmedName = fullName.trim();
     if (trimmedName.length < 2) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         error: "InvalidName",
-        message: "Name must be at least 2 characters"
+        message: "Name must be at least 2 characters" 
       });
     }
     if (trimmedName.length > 50) {
-      return res.status(400).json({
+      return res.status(400).json({ 
         error: "InvalidName",
-        message: "Name must be less than 50 characters"
+        message: "Name must be less than 50 characters" 
       });
     }
   }
@@ -254,16 +256,17 @@ export const updateProfile = async (req, res) => {
 
   const profile = result.rows[0];
 
+  // ✅ Convert snake_case to camelCase
   res.json({
     message: "ProfileUpdated",
     profile: {
       id: profile.id,
-      userId: profile.user_id,
+      userId: profile.user_id,           // ✅ Convert to camelCase
       email: profile.email,
-      fullName: profile.full_name,
+      fullName: profile.full_name,       // ✅ Convert to camelCase
       department: profile.department,
-      workHoursStart: profile.work_hours_start,
-      workHoursEnd: profile.work_hours_end
+      workHoursStart: profile.work_hours_start,  // ✅ Convert to camelCase
+      workHoursEnd: profile.work_hours_end       // ✅ Convert to camelCase
     }
   });
 };
