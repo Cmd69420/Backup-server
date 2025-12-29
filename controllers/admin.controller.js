@@ -380,10 +380,15 @@ export const getUserMeetings = async (req, res) => {
     params.push(req.companyId);
   }
 
-  const totalCountResult = await pool.query(
-    `SELECT COUNT(*) FROM meetings WHERE user_id = $1 ${companyFilter}`,
-    req.isSuperAdmin ? [userId] : [userId, req.companyId]
-  );
+  // FIXED total count query
+const totalCountResult = await pool.query(
+  `SELECT COUNT(*)
+   FROM meetings m
+   WHERE m.user_id = $1
+   ${req.isSuperAdmin ? '' : 'AND m.company_id = $2'}`,
+  req.isSuperAdmin ? [userId] : [userId, req.companyId]
+);
+
   const totalCount = parseInt(totalCountResult.rows[0].count);
 
   const result = await pool.query(
@@ -447,7 +452,8 @@ export const getUserExpenses = async (req, res) => {
   }
 
   // ✅ UPDATED: Add company_id filter
-  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $4';
+  const companyFilter = req.isSuperAdmin ? '' : 'AND m.company_id = $2';
+
   const params = [userId, limit, offset];
   if (!req.isSuperAdmin) {
     params.push(req.companyId);
