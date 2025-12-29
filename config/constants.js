@@ -8,7 +8,7 @@ export const MIDDLEWARE_TOKEN = process.env.MIDDLEWARE_TOKEN || "tally-middlewar
 export const CORS_ORIGIN = [
   "http://localhost:3000", 
   "https://geo-track-em3s.onrender.com",
-  "https://dashboard-1yda.onrender.com"
+  "https://dashboard-tsw3.onrender.com"
 ];
 
 // 🆕 EMAIL CONFIGURATION
