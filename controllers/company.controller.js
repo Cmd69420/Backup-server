@@ -62,8 +62,6 @@ export const getAllCompanies = async (req, res) => {
       c.name,
       c.subdomain,
       c.is_active,
-      c.contact_email,
-      c.contact_phone,
       c.created_at,
       c.updated_at,
       c.settings,
@@ -78,61 +76,46 @@ export const getAllCompanies = async (req, res) => {
     LEFT JOIN location_logs ll ON ll.company_id = c.id
     WHERE 1=1
   `;
-  
+
   const params = [];
   let paramCount = 0;
 
-  // Status filter
-  if (status === 'active' || status === 'inactive') {
+  if (status === "active" || status === "inactive") {
     paramCount++;
     query += ` AND c.is_active = $${paramCount}`;
-    params.push(status === 'active');
+    params.push(status === "active");
   }
 
-  // Search filter
   if (search) {
     paramCount++;
-    query += ` AND (c.name ILIKE $${paramCount} OR c.subdomain ILIKE $${paramCount} OR c.contact_email ILIKE $${paramCount})`;
+    query += ` AND (c.name ILIKE $${paramCount} OR c.subdomain ILIKE $${paramCount})`;
     params.push(`%${search}%`);
   }
 
-  query += ` GROUP BY c.id, c.name, c.subdomain, c.is_active, c.contact_email, c.contact_phone, c.created_at, c.updated_at, c.settings`;
-  query += ` ORDER BY c.created_at DESC`;
-  query += ` LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+  query += `
+    GROUP BY c.id
+    ORDER BY c.created_at DESC
+    LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
+  `;
+
   params.push(limit, offset);
 
   const result = await pool.query(query, params);
 
-  // Get total count
-  let countQuery = "SELECT COUNT(*) FROM companies WHERE 1=1";
-  const countParams = [];
-  let countIndex = 0;
-
-  if (status === 'active' || status === 'inactive') {
-    countIndex++;
-    countQuery += ` AND is_active = $${countIndex}`;
-    countParams.push(status === 'active');
-  }
-
-  if (search) {
-    countIndex++;
-    countQuery += ` AND (name ILIKE $${countIndex} OR subdomain ILIKE $${countIndex} OR contact_email ILIKE $${countIndex})`;
-    countParams.push(`%${search}%`);
-  }
-
-  const countResult = await pool.query(countQuery, countParams);
+  const countResult = await pool.query("SELECT COUNT(*) FROM companies");
   const total = parseInt(countResult.rows[0].count);
 
   res.json({
     companies: result.rows,
     pagination: {
-      page: parseInt(page),
-      limit: parseInt(limit),
+      page: Number(page),
+      limit: Number(limit),
       total,
-      totalPages: Math.ceil(total / limit)
-    }
+      totalPages: Math.ceil(total / limit),
+    },
   });
 };
+
 
 /**
  * Get all users in a company (Super Admin only)
