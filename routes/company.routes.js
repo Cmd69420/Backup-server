@@ -1,6 +1,4 @@
 // routes/company.routes.js
-// Super admin routes for company management
-
 import express from "express";
 import { authenticateToken } from "../middleware/auth.js";
 import { requireSuperAdmin } from "../middleware/company.js";
@@ -19,6 +17,10 @@ router.get("/stats", asyncHandler(companyController.getCompanyStats));
 router.get("/:companyId", asyncHandler(companyController.getCompanyById));
 router.put("/:companyId", asyncHandler(companyController.updateCompany));
 router.delete("/:companyId", asyncHandler(companyController.deleteCompany));
+
+// ✅ ADD THESE TWO NEW ROUTES:
+router.get("/:companyId/users", asyncHandler(companyController.getCompanyUsers));
+router.get("/:companyId/clients", asyncHandler(companyController.getCompanyClients));
 
 // User-Company assignment
 router.post("/assign-user", asyncHandler(companyController.assignUserToCompany));

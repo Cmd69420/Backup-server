@@ -50,7 +50,7 @@ export const createCompany = async (req, res) => {
 };
 
 /**
- * Get all companies (Super Admin only)
+ * Get all companies with counts (Super Admin only)
  */
 export const getAllCompanies = async (req, res) => {
   const { page = 1, limit = 50, search, status } = req.query;
@@ -58,30 +58,47 @@ export const getAllCompanies = async (req, res) => {
 
   let query = `
     SELECT 
-      c.*,
-      COUNT(u.id) as user_count,
-      COUNT(cl.id) as client_count
+      c.id,
+      c.name,
+      c.subdomain,
+      c.is_active,
+      c.contact_email,
+      c.contact_phone,
+      c.created_at,
+      c.updated_at,
+      c.settings,
+      COUNT(DISTINCT u.id) as user_count,
+      COUNT(DISTINCT cl.id) as client_count,
+      COUNT(DISTINCT cs.id) as service_count,
+      COUNT(DISTINCT ll.id) as log_count
     FROM companies c
     LEFT JOIN users u ON u.company_id = c.id
     LEFT JOIN clients cl ON cl.company_id = c.id
+    LEFT JOIN client_services cs ON cs.company_id = c.id
+    LEFT JOIN location_logs ll ON ll.company_id = c.id
     WHERE 1=1
   `;
+  
   const params = [];
   let paramCount = 0;
 
+  // Status filter
   if (status === 'active' || status === 'inactive') {
     paramCount++;
     query += ` AND c.is_active = $${paramCount}`;
     params.push(status === 'active');
   }
 
+  // Search filter
   if (search) {
     paramCount++;
-    query += ` AND (c.name ILIKE $${paramCount} OR c.subdomain ILIKE $${paramCount})`;
+    query += ` AND (c.name ILIKE $${paramCount} OR c.subdomain ILIKE $${paramCount} OR c.contact_email ILIKE $${paramCount})`;
     params.push(`%${search}%`);
   }
 
-  query += ` GROUP BY c.id ORDER BY c.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+  query += ` GROUP BY c.id, c.name, c.subdomain, c.is_active, c.contact_email, c.contact_phone, c.created_at, c.updated_at, c.settings`;
+  query += ` ORDER BY c.created_at DESC`;
+  query += ` LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
   params.push(limit, offset);
 
   const result = await pool.query(query, params);
@@ -99,7 +116,7 @@ export const getAllCompanies = async (req, res) => {
 
   if (search) {
     countIndex++;
-    countQuery += ` AND (name ILIKE $${countIndex} OR subdomain ILIKE $${countIndex})`;
+    countQuery += ` AND (name ILIKE $${countIndex} OR subdomain ILIKE $${countIndex} OR contact_email ILIKE $${countIndex})`;
     countParams.push(`%${search}%`);
   }
 
@@ -115,6 +132,59 @@ export const getAllCompanies = async (req, res) => {
       totalPages: Math.ceil(total / limit)
     }
   });
+};
+
+/**
+ * Get all users in a company (Super Admin only)
+ */
+export const getCompanyUsers = async (req, res) => {
+  const { companyId } = req.params;
+
+  const result = await pool.query(
+    `SELECT 
+       u.id,
+       u.email,
+       u.is_admin,
+       u.is_super_admin,
+       u.created_at,
+       p.full_name,
+       p.department,
+       p.work_hours_start,
+       p.work_hours_end
+     FROM users u
+     LEFT JOIN profiles p ON u.id = p.user_id
+     WHERE u.company_id = $1
+     ORDER BY u.created_at DESC`,
+    [companyId]
+  );
+
+  res.json({ users: result.rows });
+};
+
+/**
+ * Get all clients in a company (Super Admin only)
+ */
+export const getCompanyClients = async (req, res) => {
+  const { companyId } = req.params;
+
+  const result = await pool.query(
+    `SELECT 
+       id,
+       name,
+       email,
+       phone,
+       status,
+       pincode,
+       latitude,
+       longitude,
+       created_at
+     FROM clients
+     WHERE company_id = $1
+     ORDER BY created_at DESC`,
+    [companyId]
+  );
+
+  res.json({ clients: result.rows });
 };
 
 /**
@@ -385,3 +455,4 @@ export const getCompanyStats = async (req, res) => {
     companyBreakdown: userStats.rows
   });
 };
+
