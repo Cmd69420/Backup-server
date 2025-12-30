@@ -96,27 +96,25 @@ export const handleLicensePurchase = async (req, res) => {
      * 3. CREATE ADMIN USER (NO PASSWORD)
      * --------------------------------------------------
      */
-    const userRes = await client.query(
-      `INSERT INTO users (
-        email,
-        password,
-        is_admin,
-        is_super_admin,
-        company_id,
-        auth_source
-      )
-      VALUES ($1, NULL, true, false, $2, 'lms')
-      RETURNING id`,
-      [email, companyId]
-    );
+    // Generate a random, unusable password hash (schema-safe)
+const unusablePasswordHash = crypto
+  .createHash("sha256")
+  .update(crypto.randomBytes(64))
+  .digest("hex");
 
-    const userId = userRes.rows[0].id;
-
-    await client.query(
-      `INSERT INTO profiles (user_id, full_name)
-       VALUES ($1, $2)`,
-      [userId, fullName]
-    );
+const userRes = await client.query(
+  `INSERT INTO users (
+    email,
+    password,
+    is_admin,
+    is_super_admin,
+    company_id,
+    auth_source
+  )
+  VALUES ($1, $2, true, false, $3, 'lms')
+  RETURNING id`,
+  [email, unusablePasswordHash, companyId]
+);
 
     /**
      * --------------------------------------------------
