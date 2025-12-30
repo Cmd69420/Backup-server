@@ -1,6 +1,8 @@
 import bcrypt from "bcryptjs";
 import { pool } from "../../db.js";
 
+console.log("🚀 LMS WEBHOOK HIT");
+
 export const handleLicensePurchase = async (req, res) => {
   const {
     purchaseId,
