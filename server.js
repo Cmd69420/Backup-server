@@ -21,6 +21,7 @@ import syncRoutes from "./routes/sync.routes.js";
 import servicesRoutes from './routes/services.routes.js';
 import manualClientRoutes from './routes/manualClient.routes.js';
 import companyRoutes from './routes/company.routes.js'; // ← NEW
+import integrationRoutes from "./routes/integrations.routes.js";
 
 const app = express();
 
@@ -82,6 +83,7 @@ app.use("/super-admin/companies", companyRoutes);
 // SYNC ROUTES (Middleware + Authenticated)
 // ============================================
 app.use("/api/sync", syncRoutes);
+app.use("/integrations", integrationRoutes);
 
 // ============================================
 // HEALTH CHECK
