@@ -1,5 +1,5 @@
 // server.js
-// UPDATED: Added company context middleware and routes
+// UPDATED: Fixed license routes to require authentication
 
 import express from "express";
 import cors from "cors";
@@ -20,7 +20,7 @@ import adminRoutes from "./routes/admin.routes.js";
 import syncRoutes from "./routes/sync.routes.js";
 import servicesRoutes from './routes/services.routes.js';
 import manualClientRoutes from './routes/manualClient.routes.js';
-import companyRoutes from './routes/company.routes.js'; // ← NEW
+import companyRoutes from './routes/company.routes.js';
 import integrationRoutes from "./routes/integrations.routes.js";
 import licenseRoutes from './routes/license.routes.js';
 
@@ -30,7 +30,7 @@ const app = express();
 app.use(cors({
   origin: CORS_ORIGIN,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-company-id"] // ← Added x-company-id
+  allowedHeaders: ["Content-Type", "Authorization", "x-company-id"]
 }));
 app.options("*", cors());
 
@@ -39,7 +39,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging
 app.use((req, res, next) => {
-  console.log(`📥 ${req.method} ${req.path}`);
+  console.log(`🔥 ${req.method} ${req.path}`);
   next();
 });
 
@@ -56,12 +56,16 @@ pool.query("SELECT NOW()", (err, res) => {
 // PUBLIC ROUTES (No Authentication)
 // ============================================
 app.use("/auth", authRoutes);
-app.use("/licenses", licenseRoutes);
+
+// ============================================
+// AUTHENTICATED ROUTES
+// ============================================
+// License routes require authentication
+app.use("/licenses", authenticateToken, licenseRoutes);
 
 // ============================================
 // COMPANY-SCOPED ROUTES (Authenticated + Company Context)
 // ============================================
-// These routes require both authentication AND company context
 app.use("/clients", authenticateToken, attachCompanyContext, clientRoutes);
 app.use("/location-logs", authenticateToken, attachCompanyContext, locationRoutes);
 app.use("/meetings", authenticateToken, attachCompanyContext, meetingRoutes);
@@ -72,25 +76,18 @@ app.use('/api/manual-clients', authenticateToken, attachCompanyContext, manualCl
 // ============================================
 // ADMIN ROUTES (Company Admin)
 // ============================================
-// Admin routes operate within their company scope
 app.use("/admin", authenticateToken, attachCompanyContext, adminRoutes);
 
 // ============================================
 // SUPER ADMIN ROUTES (Cross-Company Management)
 // ============================================
-// Super admin routes for managing all companies
 app.use("/super-admin/companies", companyRoutes);
 
 // ============================================
-// SYNC ROUTES (Middleware + Authenticated)
+// SYNC ROUTES
 // ============================================
 app.use("/api/sync", syncRoutes);
 app.use("/integrations", integrationRoutes);
-// ============================================
-
-
-//billinng
-
 
 // ============================================
 // HEALTH CHECK
