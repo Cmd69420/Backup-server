@@ -56,6 +56,7 @@ pool.query("SELECT NOW()", (err, res) => {
 // PUBLIC ROUTES (No Authentication)
 // ============================================
 app.use("/auth", authRoutes);
+app.use("/licenses", licenseRoutes);
 
 // ============================================
 // COMPANY-SCOPED ROUTES (Authenticated + Company Context)
@@ -89,7 +90,7 @@ app.use("/integrations", integrationRoutes);
 
 
 //billinng
-app.use("/api/license", licenseRoutes);
+
 
 // ============================================
 // HEALTH CHECK
