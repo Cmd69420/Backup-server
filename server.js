@@ -22,6 +22,7 @@ import servicesRoutes from './routes/services.routes.js';
 import manualClientRoutes from './routes/manualClient.routes.js';
 import companyRoutes from './routes/company.routes.js'; // ← NEW
 import integrationRoutes from "./routes/integrations.routes.js";
+import licenseRoutes from './routes/license.routes.js';
 
 const app = express();
 
@@ -85,6 +86,10 @@ app.use("/super-admin/companies", companyRoutes);
 app.use("/api/sync", syncRoutes);
 app.use("/integrations", integrationRoutes);
 // ============================================
+
+
+//billinng
+app.use("/api/license", licenseRoutes);
 
 // ============================================
 // HEALTH CHECK
