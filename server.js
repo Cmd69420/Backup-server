@@ -61,7 +61,7 @@ app.use("/auth", authRoutes);
 // AUTHENTICATED ROUTES
 // ============================================
 // License routes require authentication
-app.use("/licenses", authenticateToken, licenseRoutes);
+app.use("/api/license", authenticateToken, licenseRoutes);
 
 // ============================================
 // COMPANY-SCOPED ROUTES (Authenticated + Company Context)
