@@ -1,66 +1,98 @@
-// routes/services.routes.js - COMPLETE VERSION
+// routes/services.routes.js
+// UPDATED: Added plan-based service limitations and feature gating
+
 import express from "express";
 import { authenticateToken, requireRole } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
+import { 
+  requireFeature, 
+  checkServiceCreationLimit 
+} from "../middleware/featureAuth.js";  // ← NEW IMPORT
 import * as servicesController from "../controllers/services.controller.js";
 
 const router = express.Router();
 
-// ⚠️ IMPORTANT: Put /all BEFORE /client/:clientId to avoid route conflicts!
+// ============================================
+// FEATURE GATE: Services Module
+// ============================================
+// ⚠️ IMPORTANT: This blocks the ENTIRE services module for Starter plan
+// Services are only available in Professional, Business, and Enterprise plans
+router.use(
+  authenticateToken,
+  requireFeature('services')  // ← NEW: Blocks if services not enabled
+);
 
-// Get ALL services across all clients (NEW - for ClientServicesPage)
+// ============================================
+// GET ALL SERVICES (Advanced Analytics Required)
+// ============================================
+// Viewing all services across all clients requires advanced analytics
+// Available in: Business, Enterprise
 router.get(
   "/all",
-  authenticateToken,
   requireRole(['admin', 'editor']),
+  requireFeature('advancedAnalytics'),  // ← NEW: Blocks Starter/Professional
   asyncHandler(servicesController.getAllServices)
 );
 
-// Get expiring services
+// ============================================
+// GET EXPIRING SERVICES
+// ============================================
 router.get(
   "/expiring",
-  authenticateToken,
   requireRole(['admin', 'editor']),
   asyncHandler(servicesController.getExpiringServices)
 );
 
-// Get services for ONE specific client (for ClientServicesModal)
+// ============================================
+// CLIENT-SPECIFIC SERVICES
+// ============================================
+// Get services for ONE specific client
 router.get(
   "/client/:clientId",
-  authenticateToken,
   requireRole(['admin', 'editor']),
   asyncHandler(servicesController.getClientServices)
 );
 
-// Create new service for a client
+// ============================================
+// CREATE SERVICE (With Limits)
+// ============================================
+// Professional: Max 10 services per client
+// Business: Max 50 services per client
+// Enterprise: UNLIMITED services per client
 router.post(
   "/client/:clientId",
-  authenticateToken,
   requireRole(['admin', 'editor']),
+  checkServiceCreationLimit,  // ← NEW: Checks service limit per client
   asyncHandler(servicesController.createService)
 );
 
-// Update service
+// ============================================
+// UPDATE SERVICE
+// ============================================
 router.put(
   "/:serviceId",
-  authenticateToken,
   requireRole(['admin', 'editor']),
   asyncHandler(servicesController.updateService)
 );
 
-// Delete service (admin only)
+// ============================================
+// DELETE SERVICE (Admin Only)
+// ============================================
 router.delete(
   "/:serviceId",
-  authenticateToken,
   requireRole(['admin']),
   asyncHandler(servicesController.deleteService)
 );
 
-// Get service history
+// ============================================
+// SERVICE HISTORY (Feature-Gated)
+// ============================================
+// Service history tracking requires 'servicesHistory' feature
+// Available in: Business, Enterprise
 router.get(
   "/:serviceId/history",
-  authenticateToken,
   requireRole(['admin', 'editor']),
+  requireFeature('servicesHistory'),  // ← NEW: Blocks Starter/Professional
   asyncHandler(servicesController.getServiceHistory)
 );
 
