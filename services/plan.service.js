@@ -8,12 +8,15 @@ import { pool } from "../db.js";
  */
 export const getCompanyPlanFeatures = async (companyId) => {
   const result = await pool.query(`
-    SELECT 
-      c.current_plan,
-      c.name as company_name,
+    SELECT
+      c.name AS company_name,
+      COALESCE(cl.plan, 'starter') AS plan_name,
       pf.*
     FROM companies c
-    LEFT JOIN plan_features pf ON pf.plan_name = c.current_plan
+    LEFT JOIN company_licenses cl 
+      ON cl.company_id = c.id
+    LEFT JOIN plan_features pf 
+      ON pf.plan_name = COALESCE(cl.plan, 'starter')
     WHERE c.id = $1
   `, [companyId]);
 
@@ -22,20 +25,20 @@ export const getCompanyPlanFeatures = async (companyId) => {
   }
 
   const f = result.rows[0];
-  
+
   return {
-    planName: f.plan_name || 'starter',
+    planName: f.plan_name,
     displayName: f.display_name,
     priceINR: f.price_inr,
     companyName: f.company_name,
-    
+
     limits: {
       users: {
         max: f.max_users,
         maxConcurrentSessions: f.max_concurrent_sessions
       },
       clients: {
-        max: f.max_clients, // NULL = unlimited
+        max: f.max_clients,
         importBatchSize: f.client_import_batch_size
       },
       storage: {
@@ -55,64 +58,57 @@ export const getCompanyPlanFeatures = async (companyId) => {
         receiptMaxSizeMB: f.receipt_image_max_size_mb
       },
       services: {
-        maxPerClient: f.max_services_per_client // NULL = unlimited
+        maxPerClient: f.max_services_per_client
       },
       api: {
-        rateLimit: f.api_rate_limit_per_hour // NULL = no access
+        rateLimit: f.api_rate_limit_per_hour
       }
     },
-    
+
     tracking: {
       gpsEnabled: f.gps_tracking_enabled,
-      gpsIntervalMinutes: f.gps_tracking_interval_minutes // NULL = realtime
+      gpsIntervalMinutes: f.gps_tracking_interval_minutes
     },
-    
+
     features: {
-      // Client Management
       clientManagementType: f.client_management_type,
       pincodeFiltering: f.pincode_filtering_enabled,
       smartPincodeFiltering: f.smart_pincode_filtering_enabled,
       advancedSearch: f.advanced_search_enabled,
       bulkOperations: f.bulk_operations_enabled,
-      
-      // Services
+
       services: f.services_enabled,
       servicesHistory: f.services_history_enabled,
-      
-      // Expenses
+
       expenses: f.expenses_enabled,
-      
-      // Integrations
+
       tallySync: f.tally_sync_enabled,
       tallySyncFrequency: f.tally_sync_frequency_minutes,
       apiAccess: f.api_access_enabled,
       webhooks: f.webhook_enabled,
-      
-      // Reporting
+
       basicReports: f.basic_reports_enabled,
       advancedAnalytics: f.advanced_analytics_enabled,
       customReports: f.custom_reports_enabled,
       dataExport: f.data_export_enabled,
       exportFormats: f.data_export_formats || [],
-      
-      // Team
+
       teamManagement: f.team_management_enabled,
       roleBasedPermissions: f.role_based_permissions,
-      
-      // Maps
+
       interactiveMaps: f.interactive_maps_enabled,
       routeOptimization: f.route_optimization_enabled,
-      
-      // Branding
+
       customBranding: f.custom_branding_enabled,
       whiteLabel: f.white_label_enabled
     },
-    
+
     support: {
       level: f.support_level
     }
   };
 };
+
 
 /**
  * Check if feature is enabled for company
@@ -335,21 +331,26 @@ export const logFeatureUsage = async (companyId, userId, featureName, action, me
  */
 export const upgradeCompanyPlan = async (companyId, newPlan) => {
   const planCheck = await pool.query(
-    'SELECT plan_name FROM plan_features WHERE plan_name = $1',
+    'SELECT 1 FROM plan_features WHERE plan_name = $1',
     [newPlan]
   );
-  
+
   if (planCheck.rows.length === 0) {
     throw new Error(`Invalid plan: ${newPlan}`);
   }
-  
-  await pool.query(
-    'UPDATE companies SET current_plan = $1, updated_at = NOW() WHERE id = $2',
-    [newPlan, companyId]
-  );
-  
+
+  await pool.query(`
+    INSERT INTO company_licenses (company_id, plan)
+    VALUES ($1, $2)
+    ON CONFLICT (company_id)
+    DO UPDATE SET
+      plan = EXCLUDED.plan,
+      expires_at = NULL
+  `, [companyId, newPlan]);
+
   console.log(`✅ Company ${companyId} upgraded to ${newPlan}`);
 };
+
 
 /**
  * Get all available plans (for pricing page)

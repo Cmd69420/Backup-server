@@ -70,22 +70,13 @@ export const handleLicensePurchase = async (req, res) => {
       
       // Update company settings
       await client.query(
-        `UPDATE companies 
-         SET settings = $1,
-             is_active = true,
-             updated_at = NOW()
-         WHERE id = $2`,
-        [
-          JSON.stringify({
-            plan: planType || "Standard",
-            maxUsers: maxUsers || 1,
-            licenseKey: licenseKey,
-            purchaseId: purchaseId,
-            expiryDate: expiryDate
-          }),
-          company.id
-        ]
-      );
+  `UPDATE companies
+   SET is_active = true,
+       updated_at = NOW()
+   WHERE id = $1`,
+  [company.id]
+);
+
       console.log(`✅ Company settings updated`);
 
     } else {
@@ -94,21 +85,15 @@ export const handleLicensePurchase = async (req, res) => {
       console.log(`\n✨ Creating new company: ${companyName}`);
       
       const companyResult = await client.query(
-        `INSERT INTO companies (name, subdomain, is_active, settings)
-         VALUES ($1, $2, true, $3)
-         RETURNING id, name, subdomain`,
-        [
-          companyName,
-          subdomain.toLowerCase(),
-          JSON.stringify({
-            plan: planType || "Standard",
-            maxUsers: maxUsers || 1,
-            licenseKey: licenseKey,
-            purchaseId: purchaseId,
-            expiryDate: expiryDate
-          })
-        ]
-      );
+  `INSERT INTO companies (name, subdomain, is_active)
+   VALUES ($1, $2, true)
+   RETURNING id, name, subdomain`,
+  [
+    companyName,
+    subdomain.toLowerCase()
+  ]
+);
+
       company = companyResult.rows[0];
       console.log(`✅ Company created: ${company.name} (@${company.subdomain})`);
     }
