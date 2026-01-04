@@ -1,5 +1,5 @@
 // routes/manualClient.routes.js
-// UPDATED: Added plan-based client creation limitations
+// FINAL VERSION: With plan limitations + trial user restrictions
 
 import express from "express";
 import { authenticateToken } from "../middleware/auth.js";
@@ -7,7 +7,11 @@ import { asyncHandler } from "../middleware/errorHandler.js";
 import { 
   checkClientCreationLimit,
   requireFeature 
-} from "../middleware/featureAuth.js";  // ← NEW IMPORT
+} from "../middleware/featureAuth.js";
+import { 
+  blockTrialUserWrites, 
+  enforceTrialUserLimits 
+} from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as manualClientController from "../controllers/manualClient.controller.js";
 
 const router = express.Router();
@@ -16,50 +20,69 @@ const router = express.Router();
 router.use(authenticateToken);
 
 // ============================================
-// CLIENT CRUD (With Creation Limit)
+// CREATE CLIENT
 // ============================================
-// Starter: 100 clients max
-// Professional: 500 clients max
-// Business: 2000 clients max
-// Enterprise: UNLIMITED
+// Blocked for trial users
 router.post("/", 
-  checkClientCreationLimit,  // ← NEW: Checks if client limit reached
+  blockTrialUserWrites,  // ← NEW: Block trial users
+  checkClientCreationLimit,
   asyncHandler(manualClientController.createClient)
 );
 
-// Get all clients
+// ============================================
+// GET ALL CLIENTS
+// ============================================
+// Allow trial users with limits
 router.get("/", 
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(manualClientController.getClients)
 );
 
-// Get single client by ID
+// ============================================
+// GET SINGLE CLIENT BY ID
+// ============================================
+// Allow trial users
 router.get("/:id", 
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(manualClientController.getClientById)
 );
 
-// Update client
+// ============================================
+// UPDATE CLIENT
+// ============================================
+// Blocked for trial users
 router.put("/:id", 
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(manualClientController.updateClient)
 );
 
-// Delete client
+// ============================================
+// DELETE CLIENT
+// ============================================
+// Blocked for trial users
 router.delete("/:id", 
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(manualClientController.deleteClient)
 );
 
 // ============================================
-// SEARCH (Feature-Gated)
+// BASIC SEARCH
 // ============================================
-// Basic search - available to all plans
+// Allow trial users with limits
 router.get("/search", 
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(manualClientController.searchClients)
 );
 
-// Advanced search with filters - requires 'advancedSearch' feature (Professional+)
+// ============================================
+// ADVANCED SEARCH (Feature-Gated)
+// ============================================
+// Requires Professional+ plan, allow trial users with limits
 router.get("/search/advanced",
-  requireFeature('advancedSearch'),  // ← NEW: Blocks Starter plan
+  requireFeature('advancedSearch'),
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(async (req, res) => {
-    // TODO: Implement advanced search with multiple filters
+    // TODO: Implement advanced search with filters
     res.json({ 
       message: "Advanced search with filters",
       filters: req.query 

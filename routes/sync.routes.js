@@ -1,10 +1,11 @@
 // routes/sync.routes.js
-// UPDATED: Added plan-based Tally integration limitations
+// FINAL VERSION: With plan limitations + trial user restrictions
 
 import express from "express";
 import { authenticateToken, authenticateMiddleware } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
-import { requireFeature } from "../middleware/featureAuth.js";  // ← NEW IMPORT
+import { requireFeature } from "../middleware/featureAuth.js";
+import { requireFullUser } from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as syncController from "../controllers/sync.controller.js";
 
 const router = express.Router();
@@ -13,11 +14,10 @@ const router = express.Router();
 // TALLY MIDDLEWARE ENDPOINT (Feature-Gated)
 // ============================================
 // Tally sync is only available in Business and Enterprise plans
-// Business: Hourly sync (60 min intervals)
-// Enterprise: Every 30 minutes
+// Trial users cannot use Tally sync
 router.post("/tally-clients", 
   authenticateMiddleware,
-  requireFeature('tallySync'),  // ← NEW: Blocks if Tally not enabled
+  requireFeature('tallySync'),
   asyncHandler(syncController.syncTallyClients)
 );
 
@@ -25,29 +25,36 @@ router.post("/tally-clients",
 // TALLY CLIENT GUIDS
 // ============================================
 router.get("/tally-clients/guids", 
-  authenticateMiddleware, 
+  authenticateMiddleware,
   asyncHandler(syncController.getClientGuids)
 );
 
 // ============================================
-// USER ENDPOINTS (Require Authentication)
+// GET SYNC STATUS
 // ============================================
-// Get sync status - available to all plans (shows "not available" if disabled)
+// Allow all users to view sync status (shows "not available" if disabled)
 router.get("/status", 
-  authenticateToken, 
+  authenticateToken,
   asyncHandler(syncController.getSyncStatus)
 );
 
-// Get latest sync - available to all plans
+// ============================================
+// GET LATEST SYNC
+// ============================================
+// Allow all users to view latest sync
 router.get("/latest", 
-  authenticateToken, 
+  authenticateToken,
   asyncHandler(syncController.getLatestSync)
 );
 
-// Trigger manual sync - requires Tally feature
+// ============================================
+// TRIGGER MANUAL SYNC
+// ============================================
+// Requires Tally feature + full user (trial users blocked)
 router.post("/trigger", 
   authenticateToken,
-  requireFeature('tallySync'),  // ← NEW: Blocks if Tally not enabled
+  requireFeature('tallySync'),
+  requireFullUser,  // ← NEW: Block trial users
   asyncHandler(syncController.triggerSync)
 );
 

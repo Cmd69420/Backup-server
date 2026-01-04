@@ -1,5 +1,5 @@
 // routes/clients.routes.js
-// UPDATED: Added plan-based client and import limitations
+// FINAL VERSION: With plan limitations + trial user restrictions
 
 import express from "express";
 import multer from "multer";
@@ -9,69 +9,89 @@ import {
   checkClientCreationLimit, 
   validateImportBatchSize,
   requireFeature
-} from "../middleware/featureAuth.js";  // ← NEW IMPORT
+} from "../middleware/featureAuth.js";
+import { 
+  blockTrialUserWrites, 
+  enforceTrialUserLimits 
+} from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as clientsController from "../controllers/clients.controller.js";
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ============================================
-// EXCEL IMPORT (With Batch Size Validation)
+// EXCEL IMPORT
 // ============================================
-// Starter: 50 rows max
-// Professional: 200 rows max
-// Business: 500 rows max
-// Enterprise: 1000 rows max
+// Blocked for trial users
 router.post("/upload-excel", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   upload.single("file"),
-  validateImportBatchSize,  // ← NEW: Checks Excel row count vs plan limit
+  validateImportBatchSize,
   asyncHandler(clientsController.uploadExcel)
 );
 
 // ============================================
-// CLIENT CRUD (With Creation Limit)
+// CREATE CLIENT
 // ============================================
-// Starter: 100 clients max
-// Professional: 500 clients max
-// Business: 2000 clients max
-// Enterprise: UNLIMITED
+// Blocked for trial users
 router.post("/", 
   authenticateToken,
-  checkClientCreationLimit,  // ← NEW: Blocks if client limit reached
+  blockTrialUserWrites,  // ← NEW: Block trial users
+  checkClientCreationLimit,
   asyncHandler(clientsController.createClient)
 );
 
-// These routes don't need special limits
+// ============================================
+// GET CLIENTS
+// ============================================
+// Allow trial users but with read limits
 router.get("/", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users with limits
   asyncHandler(clientsController.getClients)
 );
 
+// ============================================
+// GET SINGLE CLIENT
+// ============================================
+// Allow trial users
 router.get("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(clientsController.getClientById)
 );
 
+// ============================================
+// UPDATE CLIENT
+// ============================================
+// Blocked for trial users
 router.put("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(clientsController.updateClient)
 );
 
+// ============================================
+// DELETE CLIENT
+// ============================================
+// Blocked for trial users
 router.delete("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(clientsController.deleteClient)
 );
 
 // ============================================
-// ADVANCED FEATURES (Feature-Gated)
+// ADVANCED SEARCH (Feature-Gated)
 // ============================================
-// Advanced search - requires 'advancedSearch' feature (Professional+)
+// Requires Professional+ plan, allow trial users with limits
 router.get("/search/advanced",
   authenticateToken,
-  requireFeature('advancedSearch'),  // ← NEW: Blocks Starter plan
+  requireFeature('advancedSearch'),
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(async (req, res) => {
-    // TODO: Implement advanced search with filters, sorting, etc.
+    // TODO: Implement advanced search
     res.json({ 
       message: "Advanced search endpoint",
       filters: req.query 
@@ -79,10 +99,14 @@ router.get("/search/advanced",
   })
 );
 
-// Bulk operations - requires 'bulkOperations' feature (Business+)
+// ============================================
+// BULK OPERATIONS (Feature-Gated)
+// ============================================
+// Requires Business+ plan, blocked for trial users
 router.post("/bulk/update",
   authenticateToken,
-  requireFeature('bulkOperations'),  // ← NEW: Blocks Starter/Professional
+  requireFeature('bulkOperations'),
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(async (req, res) => {
     // TODO: Implement bulk update
     res.json({ 
@@ -94,7 +118,8 @@ router.post("/bulk/update",
 
 router.post("/bulk/delete",
   authenticateToken,
-  requireFeature('bulkOperations'),  // ← NEW: Blocks Starter/Professional
+  requireFeature('bulkOperations'),
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(async (req, res) => {
     // TODO: Implement bulk delete
     res.json({ 

@@ -1,61 +1,90 @@
 // routes/expenses.routes.js
-// UPDATED: Added plan-based expense receipt limitations
+// FINAL VERSION: With plan limitations + trial user restrictions
 
 import express from "express";
+import multer from "multer";
 import { authenticateToken } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
-import { checkExpenseReceiptUpload } from "../middleware/featureAuth.js";  // ← NEW IMPORT
+import { checkExpenseReceiptUpload } from "../middleware/featureAuth.js";
+import { 
+  blockTrialUserWrites, 
+  enforceTrialUserLimits 
+} from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as expensesController from "../controllers/expenses.controller.js";
-import multer from "multer";
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ============================================
-// EXPENSE CRUD
+// CREATE EXPENSE
 // ============================================
+// Blocked for trial users
 router.post("/", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(expensesController.createExpense)
 );
 
+// ============================================
+// GET MY TOTAL EXPENSES
+// ============================================
+// Allow trial users with limits
 router.get("/my-total", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(expensesController.getMyTotal)
 );
 
+// ============================================
+// GET MY EXPENSES
+// ============================================
+// Allow trial users with limits
 router.get("/my-expenses", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(expensesController.getMyExpenses)
 );
 
+// ============================================
+// UPLOAD RECEIPT
+// ============================================
+// Blocked for trial users
+router.post("/receipts", 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
+  upload.single("file"),
+  checkExpenseReceiptUpload,
+  asyncHandler(expensesController.uploadReceipt)
+);
+
+// ============================================
+// GET EXPENSE BY ID
+// ============================================
+// Allow trial users with limits
 router.get("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(expensesController.getExpenseById)
 );
 
+// ============================================
+// UPDATE EXPENSE
+// ============================================
+// Blocked for trial users
 router.put("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(expensesController.updateExpense)
 );
 
+// ============================================
+// DELETE EXPENSE
+// ============================================
+// Blocked for trial users
 router.delete("/:id", 
-  authenticateToken, 
-  asyncHandler(expensesController.deleteExpense)
-);
-
-// ============================================
-// RECEIPT UPLOAD (With Limits)
-// ============================================
-// Starter: 2 receipt images per expense, 5MB each
-// Professional: 5 receipt images per expense, 10MB each
-// Business: 10 receipt images per expense, 20MB each
-// Enterprise: 20 receipt images per expense, 50MB each
-router.post("/receipts", 
   authenticateToken,
-  upload.single("file"),
-  checkExpenseReceiptUpload,  // ← NEW: Checks receipt count & file size
-  asyncHandler(expensesController.uploadReceipt)
+  blockTrialUserWrites,  // ← NEW: Block trial users
+  asyncHandler(expensesController.deleteExpense)
 );
 
 export default router;

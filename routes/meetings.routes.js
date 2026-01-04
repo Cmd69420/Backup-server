@@ -1,60 +1,89 @@
 // routes/meetings.routes.js
-// UPDATED: Added plan-based meeting attachment limitations
+// FINAL VERSION: With plan limitations + trial user restrictions
 
 import express from "express";
 import multer from "multer";
 import { authenticateToken } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
-import { checkMeetingAttachmentUpload } from "../middleware/featureAuth.js";  // ← NEW IMPORT
+import { checkMeetingAttachmentUpload } from "../middleware/featureAuth.js";
+import { 
+  blockTrialUserWrites, 
+  enforceTrialUserLimits 
+} from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as meetingsController from "../controllers/meetings.controller.js";
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // ============================================
-// MEETING CRUD
+// START MEETING
 // ============================================
+// Blocked for trial users
 router.post("/", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(meetingsController.startMeeting)
 );
 
+// ============================================
+// GET ACTIVE MEETING
+// ============================================
+// Allow trial users with limits
 router.get("/active/:clientId", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(meetingsController.getActiveMeeting)
 );
 
+// ============================================
+// GET MEETING BY ID
+// ============================================
+// Allow trial users with limits
 router.get("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(meetingsController.getMeetingById)
 );
 
+// ============================================
+// GET ALL MEETINGS
+// ============================================
+// Allow trial users with limits
 router.get("/", 
-  authenticateToken, 
+  authenticateToken,
+  enforceTrialUserLimits,  // ← NEW: Allow trial users
   asyncHandler(meetingsController.getMeetings)
 );
 
+// ============================================
+// UPDATE MEETING
+// ============================================
+// Blocked for trial users
 router.put("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(meetingsController.updateMeeting)
 );
 
+// ============================================
+// DELETE MEETING
+// ============================================
+// Blocked for trial users
 router.delete("/:id", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   asyncHandler(meetingsController.deleteMeeting)
 );
 
 // ============================================
-// MEETING ATTACHMENTS (With Limits)
+// UPLOAD MEETING ATTACHMENT
 // ============================================
-// Starter: 2 attachments per meeting, 5MB each
-// Professional: 5 attachments per meeting, 10MB each
-// Business: 10 attachments per meeting, 20MB each
-// Enterprise: 20 attachments per meeting, 50MB each
+// Blocked for trial users
 router.post("/:id/attachments", 
-  authenticateToken, 
+  authenticateToken,
+  blockTrialUserWrites,  // ← NEW: Block trial users
   upload.single("file"),
-  checkMeetingAttachmentUpload,  // ← NEW: Checks attachment count & file size
+  checkMeetingAttachmentUpload,
   asyncHandler(meetingsController.uploadAttachment)
 );
 
