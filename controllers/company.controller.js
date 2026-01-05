@@ -7,7 +7,7 @@ import { pool } from "../db.js";
  * Create new company (Super Admin only)
  */
 export const createCompany = async (req, res) => {
-  const { name, subdomain, settings } = req.body;
+  const { name, subdomain, settings, email, emailDomain } = req.body;
 
   if (!name || !subdomain) {
     return res.status(400).json({ 
@@ -24,22 +24,44 @@ export const createCompany = async (req, res) => {
     });
   }
 
+  // ✅ NEW: Extract email domain if admin email provided
+  let companyEmailDomain = emailDomain; // Allow explicit override
+  
+  if (!companyEmailDomain && email) {
+    try {
+      companyEmailDomain = extractDomain(email);
+      console.log(`📧 Extracted email domain from admin email: ${companyEmailDomain}`);
+    } catch (error) {
+      console.log(`⚠️ Could not extract email domain from ${email}`);
+    }
+  }
+
   try {
     const result = await pool.query(
-      `INSERT INTO companies (name, subdomain, settings, is_active)
-       VALUES ($1, $2, $3, true)
+      `INSERT INTO companies (name, subdomain, email_domain, settings, is_active)
+       VALUES ($1, $2, $3, $4, true)
        RETURNING *`,
-      [name, subdomain.toLowerCase(), settings || {}]
+      [name, subdomain.toLowerCase(), companyEmailDomain || null, settings || {}]
     );
 
     console.log(`✅ Company created: ${name} (@${subdomain})`);
+    if (companyEmailDomain) {
+      console.log(`   📧 Email domain set: ${companyEmailDomain}`);
+    }
 
     res.status(201).json({
       message: "CompanyCreated",
-      company: result.rows[0]
+      company: result.rows[0],
+      emailDomainSet: !!companyEmailDomain
     });
   } catch (error) {
     if (error.code === '23505') { // Unique violation
+      if (error.constraint?.includes('email_domain')) {
+        return res.status(409).json({ 
+          error: "EmailDomainExists",
+          message: "A company with this email domain already exists" 
+        });
+      }
       return res.status(409).json({ 
         error: "SubdomainExists",
         message: "A company with this subdomain already exists" 

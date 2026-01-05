@@ -1,10 +1,8 @@
-// controllers/integrations/lms.controller.js
-// GeoTrack Backend - Handles incoming license purchase from LMS
-// Supports: NEW purchases + Renewals/Upgrades
-
+// controllers/integrations/lms.controller.js - FIXED
 import bcrypt from "bcryptjs";
 import { pool } from "../../db.js";
 import crypto from "crypto";
+import { extractDomain, isGenericEmailDomain } from "../../services/emailDomain.service.js";
 
 export const handleLicensePurchase = async (req, res) => {
   console.log("\n🎯 LMS License Purchase Webhook Received");
@@ -24,7 +22,7 @@ export const handleLicensePurchase = async (req, res) => {
       planType,
       maxUsers,
       expiryDate,
-      isRenewal = false // ← NEW: Flag to indicate if this is a renewal
+      isRenewal = false
     } = req.body;
 
     console.log("📦 Payload received:");
@@ -39,9 +37,7 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Is Renewal: ${isRenewal}`);
     console.log(`   Password provided: ${password ? 'Yes' : 'No'}`);
 
-    // ============================================
-    // 1. VALIDATE REQUIRED FIELDS
-    // ============================================
+    // Validate required fields
     if (!email || !companyName || !subdomain || !licenseKey) {
       console.error("❌ Missing required fields");
       return res.status(400).json({
@@ -50,13 +46,26 @@ export const handleLicensePurchase = async (req, res) => {
       });
     }
 
+    // ✅ NEW: Extract email domain from admin email
+    let emailDomain = null;
+    try {
+      const extractedDomain = extractDomain(email);
+      // Only set if not a generic domain (gmail, yahoo, etc.)
+      if (!isGenericEmailDomain(email)) {
+        emailDomain = extractedDomain;
+        console.log(`   📧 Email domain extracted: ${emailDomain}`);
+      } else {
+        console.log(`   ⚠️ Generic email detected (${extractedDomain}), not setting email_domain`);
+      }
+    } catch (error) {
+      console.log(`   ⚠️ Could not extract email domain: ${error.message}`);
+    }
+
     await client.query("BEGIN");
 
-    // ============================================
-    // 2. CHECK IF COMPANY ALREADY EXISTS
-    // ============================================
+    // Check if company already exists
     const existingCompany = await client.query(
-      `SELECT id, name, subdomain FROM companies WHERE subdomain = $1`,
+      `SELECT id, name, subdomain, email_domain FROM companies WHERE subdomain = $1`,
       [subdomain.toLowerCase()]
     );
 
@@ -68,15 +77,23 @@ export const handleLicensePurchase = async (req, res) => {
       company = existingCompany.rows[0];
       console.log(`\n🔄 Existing company found: ${company.name} (${company.id})`);
       
-      // Update company settings
-      await client.query(
-  `UPDATE companies
-   SET is_active = true,
-       updated_at = NOW()
-   WHERE id = $1`,
-  [company.id]
-);
-
+      // ✅ NEW: Update email_domain if not already set
+      if (!company.email_domain && emailDomain) {
+        await client.query(
+          `UPDATE companies
+           SET email_domain = $1, is_active = true, updated_at = NOW()
+           WHERE id = $2`,
+          [emailDomain, company.id]
+        );
+        console.log(`   📧 Email domain set: ${emailDomain}`);
+      } else {
+        await client.query(
+          `UPDATE companies
+           SET is_active = true, updated_at = NOW()
+           WHERE id = $1`,
+          [company.id]
+        );
+      }
       console.log(`✅ Company settings updated`);
 
     } else {
@@ -84,23 +101,22 @@ export const handleLicensePurchase = async (req, res) => {
       isNewCompany = true;
       console.log(`\n✨ Creating new company: ${companyName}`);
       
+      // ✅ NEW: Include email_domain in INSERT
       const companyResult = await client.query(
-  `INSERT INTO companies (name, subdomain, is_active)
-   VALUES ($1, $2, true)
-   RETURNING id, name, subdomain`,
-  [
-    companyName,
-    subdomain.toLowerCase()
-  ]
-);
+        `INSERT INTO companies (name, subdomain, email_domain, is_active)
+         VALUES ($1, $2, $3, true)
+         RETURNING id, name, subdomain, email_domain`,
+        [companyName, subdomain.toLowerCase(), emailDomain]
+      );
 
       company = companyResult.rows[0];
       console.log(`✅ Company created: ${company.name} (@${company.subdomain})`);
+      if (company.email_domain) {
+        console.log(`   📧 Email domain set: ${company.email_domain}`);
+      }
     }
 
-    // ============================================
-    // 3. UPSERT LICENSE IN COMPANY_LICENSES TABLE
-    // ============================================
+    // Upsert license
     console.log("\n🎫 Upserting license record...");
 
     const licenseResult = await client.query(
@@ -127,9 +143,7 @@ export const handleLicensePurchase = async (req, res) => {
     const licenseOp = licenseResult.rows[0].inserted ? "created" : "updated";
     console.log(`✅ License ${licenseOp}: ${licenseKey}`);
 
-    // ============================================
-    // 4. HANDLE USER ACCOUNT
-    // ============================================
+    // Handle user account
     const existingUser = await client.query(
       `SELECT id, email, company_id FROM users WHERE email = $1`,
       [email]
@@ -143,7 +157,6 @@ export const handleLicensePurchase = async (req, res) => {
       user = existingUser.rows[0];
       console.log(`\n👤 Existing user found: ${user.email}`);
       
-      // If user's company doesn't match, update it
       if (user.company_id !== company.id) {
         await client.query(
           `UPDATE users SET company_id = $1 WHERE id = $2`,
@@ -152,7 +165,6 @@ export const handleLicensePurchase = async (req, res) => {
         console.log(`✅ User reassigned to company: ${company.name}`);
       }
       
-      // Optionally update password if provided in renewal
       if (password && password.trim() !== '') {
         const hashedPassword = await bcrypt.hash(password, 10);
         await client.query(
@@ -166,7 +178,6 @@ export const handleLicensePurchase = async (req, res) => {
       // CREATE NEW USER
       console.log(`\n👤 Creating new user account...`);
 
-      // Generate password if not provided
       if (!userPassword || userPassword.trim() === '') {
         userPassword = crypto.randomBytes(12).toString('base64').slice(0, 16);
         console.log(`🔐 Generated password for user`);
@@ -184,7 +195,6 @@ export const handleLicensePurchase = async (req, res) => {
       user = userResult.rows[0];
       console.log(`✅ User created: ${user.email} (Admin)`);
 
-      // Create profile
       await client.query(
         `INSERT INTO profiles (user_id, full_name)
          VALUES ($1, $2)`,
@@ -195,9 +205,6 @@ export const handleLicensePurchase = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // ============================================
-    // 5. SEND SUCCESS RESPONSE
-    // ============================================
     console.log("\n✅ License provisioning completed successfully!");
     console.log("=" .repeat(60));
 
@@ -209,13 +216,14 @@ export const handleLicensePurchase = async (req, res) => {
         id: company.id,
         name: company.name,
         subdomain: company.subdomain,
+        emailDomain: company.email_domain, // ✅ NEW
         url: `https://${company.subdomain}.yourdomain.com`
       },
       user: {
         id: user.id,
         email: user.email,
         isAdmin: true,
-        temporaryPassword: isNewCompany ? userPassword : undefined // Only send password for new accounts
+        temporaryPassword: isNewCompany ? userPassword : undefined
       },
       license: {
         key: licenseKey,
@@ -234,11 +242,17 @@ export const handleLicensePurchase = async (req, res) => {
     console.error("Error:", error.message);
     console.error("Stack:", error.stack);
 
-    // Check for duplicate license key
     if (error.code === '23505' && error.constraint?.includes('license_key')) {
       return res.status(409).json({
         error: "LicenseKeyExists",
         message: `License key "${req.body.licenseKey}" is already in use`
+      });
+    }
+
+    if (error.code === '23505' && error.constraint?.includes('email_domain')) {
+      return res.status(409).json({
+        error: "EmailDomainExists",
+        message: `Email domain is already registered to another company`
       });
     }
 
