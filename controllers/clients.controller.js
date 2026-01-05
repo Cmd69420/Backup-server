@@ -319,7 +319,13 @@ export const getClients = async (req, res) => {
       params.push(status);
     }
 
-    query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    query += `
+  ORDER BY 
+    last_visit_date DESC NULLS LAST,
+    created_at DESC
+  LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
+`;
+
     params.push(parseInt(limit), parseInt(offset));
 
     const result = await pool.query(query, params);
