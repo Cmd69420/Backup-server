@@ -12,8 +12,9 @@ const CLIENT_SELECT_FIELDS = `
   latitude, longitude, pincode,
   status, notes,
   created_by, created_at, updated_at,
-  last_visit_date, last_visit_type, last_visit_notes,
-  company_id
+  last_visit_date,      -- ✅ ADD THIS
+  last_visit_type,      -- ✅ ADD THIS (if you use it)
+  last_visit_notes      -- ✅ ADD THIS (if you use it)
 `;
 
 export const uploadExcel = async (req, res) => {
