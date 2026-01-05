@@ -4,6 +4,7 @@ import { pool } from "../db.js";
 /**
  * Create a quick visit (no full meeting)
  */
+// controllers/quickVisits.controller.js
 export const createQuickVisit = async (req, res) => {
   const { clientId, visitType, latitude, longitude, accuracy, notes } = req.body;
 
@@ -86,7 +87,6 @@ export const createQuickVisit = async (req, res) => {
          latitude,
          longitude,
          pincode,
-         has_location as "hasLocation",
          status,
          notes,
          created_by as "createdBy",
@@ -100,13 +100,18 @@ export const createQuickVisit = async (req, res) => {
 
     await client.query('COMMIT');
 
+    const updatedClient = updatedClientResult.rows[0];
+    
+    // ✅ Calculate hasLocation on the fly
+    updatedClient.hasLocation = !!(updatedClient.latitude && updatedClient.longitude);
+
     console.log(`✅ Quick visit created: ${quickVisit.id} for client ${clientCheck.rows[0].name}`);
 
-    // ✅ Return both the quick visit AND the updated client
+    // Return both the quick visit AND the updated client
     res.status(201).json({
       message: "QuickVisitCreated",
       quickVisit: quickVisit,
-      client: updatedClientResult.rows[0]  // ✅ Include full updated client data
+      client: updatedClient
     });
 
   } catch (error) {
