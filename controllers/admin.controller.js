@@ -433,13 +433,15 @@ const totalCountResult = await pool.query(
   });
 };
 
+// In controllers/admin.controller.js
+
 export const getUserExpenses = async (req, res) => {
   const userId = req.params.userId;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 50;
   const offset = (page - 1) * limit;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  // Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -451,13 +453,7 @@ export const getUserExpenses = async (req, res) => {
     }
   }
 
-  // ✅ UPDATED: Add company_id filter
-  const companyFilter = req.isSuperAdmin ? '' : 'AND m.company_id = $2';
-
-  const params = [userId, limit, offset];
-  if (!req.isSuperAdmin) {
-    params.push(req.companyId);
-  }
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
 
   const totalResult = await pool.query(
     `SELECT COUNT(*) FROM trip_expenses WHERE user_id = $1 ${companyFilter}`,
@@ -466,31 +462,63 @@ export const getUserExpenses = async (req, res) => {
   const total = parseInt(totalResult.rows[0].count);
 
   const logsResult = await pool.query(
-    `SELECT 
-       id,
-       user_id AS "userId",
-       start_location AS "startLocation",
-       end_location AS "endLocation",
-       travel_date AS "travelDate",
-       distance_km AS "distanceKm",
-       transport_mode AS "transportMode",
-       amount_spent AS "amountSpent",
-       currency,
-       notes,
-       receipt_images AS "receiptImages",
-       client_id AS "clientId",
-       created_at AS "createdAt",
-       updated_at AS "updatedAt"
-     FROM trip_expenses
+    `SELECT * FROM trip_expenses
      WHERE user_id = $1
      ${companyFilter}
      ORDER BY travel_date DESC
-     LIMIT $2 OFFSET $3`,
-    params
+     LIMIT $${req.isSuperAdmin ? 2 : 3} OFFSET $${req.isSuperAdmin ? 3 : 4}`,
+    req.isSuperAdmin ? [userId, limit, offset] : [userId, req.companyId, limit, offset]
   );
 
+  // ✅ Transform and fetch legs
+  const transformExpenseRow = (row) => ({
+    id: row.id,
+    userId: row.user_id,
+    tripName: row.trip_name,
+    isMultiLeg: row.is_multi_leg || false,
+    startLocation: row.start_location,
+    endLocation: row.end_location,
+    travelDate: row.travel_date,
+    distanceKm: row.distance_km,
+    transportMode: row.transport_mode,
+    amountSpent: row.amount_spent,
+    currency: row.currency,
+    notes: row.notes,
+    receiptUrls: row.receipt_images || [],
+    clientId: row.client_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    legs: []
+  });
+
+  const transformLegRow = (row) => ({
+    id: row.id,
+    expenseId: row.expense_id,
+    legNumber: row.leg_number,
+    startLocation: row.start_location,
+    endLocation: row.end_location,
+    distanceKm: row.distance_km,
+    transportMode: row.transport_mode,
+    amountSpent: row.amount_spent,
+    notes: row.notes,
+    createdAt: row.created_at
+  });
+
+  const expenses = logsResult.rows.map(transformExpenseRow);
+
+  // Fetch legs for multi-leg expenses
+  for (const expense of expenses) {
+    if (expense.isMultiLeg) {
+      const legsResult = await pool.query(
+        `SELECT * FROM trip_legs WHERE expense_id = $1 ORDER BY leg_number`,
+        [expense.id]
+      );
+      expense.legs = legsResult.rows.map(transformLegRow);
+    }
+  }
+
   res.json({
-    expenses: logsResult.rows,
+    expenses: expenses,
     pagination: {
       page,
       limit,
