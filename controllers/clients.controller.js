@@ -6,6 +6,16 @@ import { pool } from "../db.js";
 import { getCoordinatesFromPincode, getCoordinatesFromAddress, getPincodeFromCoordinates } from "../services/geocoding.service.js";
 import { startBackgroundGeocode } from "../utils/geocodeBatch.js";
 
+
+const CLIENT_SELECT_FIELDS = `
+  id, name, email, phone, address,
+  latitude, longitude, pincode,
+  status, notes,
+  created_by, created_at, updated_at,
+  last_visit_date, last_visit_type, last_visit_notes,
+  company_id
+`;
+
 export const uploadExcel = async (req, res) => {
   const client = await pool.connect();
   
@@ -246,7 +256,7 @@ export const createClient = async (req, res) => {
   const result = await pool.query(
     `INSERT INTO clients (name, email, phone, address, latitude, longitude, status, notes, pincode, created_by, company_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING *`,
+     RETURNING ${CLIENT_SELECT_FIELDS}`,
     [name, email || null, phone || null, address || null, latitude || null, longitude || null, status || "active", notes || null, pincode, req.user.id, req.companyId] // ← Added company_id
   );
 
@@ -276,10 +286,10 @@ export const getClients = async (req, res) => {
     console.log(`🌐 Remote search mode`);
 
     let query = `
-      SELECT *
-      FROM clients
-      WHERE company_id = $1
-      AND (created_by IS NULL OR created_by = $2)
+      SELECT ${CLIENT_SELECT_FIELDS}
+  FROM clients
+  WHERE company_id = $1
+  AND (created_by IS NULL OR created_by = $2)
     `;
     const params = [req.companyId, req.user.id]; // ← Added company_id filter
     let paramCount = 2;
@@ -375,7 +385,7 @@ export const getClients = async (req, res) => {
 
   // ✅ UPDATED: Add company filter
   let query = `
-    SELECT *
+    SELECT ${CLIENT_SELECT_FIELDS}
     FROM clients
     WHERE pincode = $1
     AND company_id = $2
@@ -439,9 +449,12 @@ export const getClients = async (req, res) => {
 export const getClientById = async (req, res) => {
   // ✅ UPDATED: Add company filter
   const result = await pool.query(
-    "SELECT * FROM clients WHERE id = $1 AND company_id = $2",
-    [req.params.id, req.companyId] // ← Added company_id filter
-  );
+  `SELECT ${CLIENT_SELECT_FIELDS}
+   FROM clients
+   WHERE id = $1 AND company_id = $2`,
+  [req.params.id, req.companyId]
+);
+
 
   if (result.rows.length === 0) {
     return res.status(404).json({ error: "ClientNotFound" });
@@ -463,7 +476,7 @@ export const updateClient = async (req, res) => {
     `UPDATE clients 
      SET name = $1, email = $2, phone = $3, address = $4, latitude = $5, longitude = $6, status = $7, notes = $8, pincode = $9
      WHERE id = $10 AND company_id = $11
-     RETURNING *`,
+     RETURNING ${CLIENT_SELECT_FIELDS}`,
     [name, email, phone, address, latitude, longitude, status, notes, pincode, req.params.id, req.companyId] // ← Added company_id filter
   );
 
