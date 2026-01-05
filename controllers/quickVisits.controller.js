@@ -69,14 +69,32 @@ export const createQuickVisit = async (req, res) => {
 
     const quickVisit = visitResult.rows[0];
 
-    // Update client's last visit info
-    await client.query(
+    // Update client's last visit info AND get updated client data
+    const updatedClientResult = await client.query(
       `UPDATE clients 
        SET last_visit_date = NOW(),
            last_visit_type = $1,
            last_visit_notes = $2,
            updated_at = NOW()
-       WHERE id = $3`,
+       WHERE id = $3
+       RETURNING 
+         id,
+         name,
+         phone,
+         email,
+         address,
+         latitude,
+         longitude,
+         pincode,
+         has_location as "hasLocation",
+         status,
+         notes,
+         created_by as "createdBy",
+         created_at as "createdAt",
+         updated_at as "updatedAt",
+         last_visit_date as "lastVisitDate",
+         last_visit_type as "lastVisitType",
+         last_visit_notes as "lastVisitNotes"`,
       [visitType, notes || null, clientId]
     );
 
@@ -84,13 +102,11 @@ export const createQuickVisit = async (req, res) => {
 
     console.log(`✅ Quick visit created: ${quickVisit.id} for client ${clientCheck.rows[0].name}`);
 
+    // ✅ Return both the quick visit AND the updated client
     res.status(201).json({
       message: "QuickVisitCreated",
       quickVisit: quickVisit,
-      client: {
-        id: clientCheck.rows[0].id,
-        name: clientCheck.rows[0].name
-      }
+      client: updatedClientResult.rows[0]  // ✅ Include full updated client data
     });
 
   } catch (error) {
