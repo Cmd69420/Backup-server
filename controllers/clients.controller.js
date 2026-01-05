@@ -8,13 +8,27 @@ import { startBackgroundGeocode } from "../utils/geocodeBatch.js";
 
 
 const CLIENT_SELECT_FIELDS = `
-  id, name, email, phone, address,
-  latitude, longitude, pincode,
-  status, notes,
-  created_by, created_at, updated_at,
-  last_visit_date,      -- ✅ ADD THIS
-  last_visit_type,      -- ✅ ADD THIS (if you use it)
-  last_visit_notes      -- ✅ ADD THIS (if you use it)
+  id, 
+  name, 
+  email, 
+  phone, 
+  address,
+  latitude, 
+  longitude, 
+  pincode,
+  status, 
+  notes,
+  created_by as "createdBy", 
+  created_at as "createdAt", 
+  updated_at as "updatedAt",
+  last_visit_date as "lastVisitDate",      -- ✅ CRITICAL: Add this alias
+  last_visit_type as "lastVisitType",      -- ✅ CRITICAL: Add this alias
+  last_visit_notes as "lastVisitNotes",    -- ✅ CRITICAL: Add this alias
+  CASE 
+    WHEN latitude IS NOT NULL AND longitude IS NOT NULL 
+    THEN true 
+    ELSE false 
+  END as "hasLocation"
 `;
 
 export const uploadExcel = async (req, res) => {
