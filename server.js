@@ -25,6 +25,7 @@ import companyRoutes from './routes/company.routes.js';
 import integrationRoutes from "./routes/integrations.routes.js";
 import licenseRoutes from './routes/license.routes.js';
 import planRoutes from './routes/plan.routes.js'; // ← NEW
+import quickVisitsRoutes from './routes/quickVisits.routes.js';
 
 const app = express();
 
@@ -86,6 +87,13 @@ app.use("/location-logs",
   attachCompanyContext, 
   attachPlanFeatures,  // ← NEW
   locationRoutes
+);
+
+app.use("/api/quick-visits", 
+  authenticateToken, 
+  attachCompanyContext, 
+  attachPlanFeatures,
+  quickVisitsRoutes
 );
 
 app.use("/meetings", 
