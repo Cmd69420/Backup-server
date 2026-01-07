@@ -70,9 +70,11 @@ export const findCompanyByEmailDomain = async (email) => {
   }
   
   const result = await pool.query(
-    `SELECT id, name, subdomain, email_domain, is_active, current_plan
-     FROM companies 
-     WHERE email_domain = $1 AND is_active = true
+    `SELECT c.id, c.name, c.subdomain, c.email_domain, c.is_active,
+            cl.plan as current_plan
+     FROM companies c
+     LEFT JOIN company_licenses cl ON c.id = cl.company_id
+     WHERE c.email_domain = $1 AND c.is_active = true
      LIMIT 1`,
     [domain]
   );

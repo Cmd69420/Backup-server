@@ -241,7 +241,9 @@ export const getUserLocationLogs = async (req, res) => {
   const offset = (page - 1) * limit;
   const userId = req.params.userId;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  console.log(`📊 Fetching logs for user ${userId}, admin company: ${req.companyId}, isSuperAdmin: ${req.isSuperAdmin}`);
+
+  // ✅ Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -249,31 +251,43 @@ export const getUserLocationLogs = async (req, res) => {
     );
     
     if (userCheck.rows.length === 0) {
+      console.log(`❌ User ${userId} not found in company ${req.companyId}`);
       return res.status(404).json({ error: "UserNotFound" });
     }
   }
 
-  // ✅ UPDATED: Add company_id filter
-  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $3';
-  const params = [userId, limit, offset];
-  if (!req.isSuperAdmin) {
-    params.splice(2, 0, req.companyId);
+  // ✅ FIX: Build params array correctly based on admin type
+  let query, params, countQuery, countParams;
+  
+  if (req.isSuperAdmin) {
+    // Super admin: No company filter
+    query = `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
+             FROM location_logs
+             WHERE user_id = $1
+             ORDER BY timestamp DESC
+             LIMIT $2 OFFSET $3`;
+    params = [userId, parseInt(limit), parseInt(offset)];
+    
+    countQuery = `SELECT COUNT(*) FROM location_logs WHERE user_id = $1`;
+    countParams = [userId];
+    
+  } else {
+    // Regular admin: Include company filter
+    query = `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
+             FROM location_logs
+             WHERE user_id = $1 AND company_id = $2
+             ORDER BY timestamp DESC
+             LIMIT $3 OFFSET $4`;
+    params = [userId, req.companyId, parseInt(limit), parseInt(offset)];
+    
+    countQuery = `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 AND company_id = $2`;
+    countParams = [userId, req.companyId];
   }
 
-  const result = await pool.query(
-    `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
-     FROM location_logs
-     WHERE user_id = $1
-     ${companyFilter}
-     ORDER BY timestamp DESC
-     LIMIT $2 OFFSET $${!req.isSuperAdmin ? 4 : 3}`,
-    params
-  );
+  console.log(`🔍 Query params:`, params);
 
-  const countResult = await pool.query(
-    `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 ${companyFilter}`,
-    req.isSuperAdmin ? [userId] : [userId, req.companyId]
-  );
+  const result = await pool.query(query, params);
+  const countResult = await pool.query(countQuery, countParams);
 
   console.log(`✅ Fetched ${result.rows.length} logs for user ${userId}`);
 
@@ -287,7 +301,6 @@ export const getUserLocationLogs = async (req, res) => {
     }
   });
 };
-
 export const getClockStatus = async (req, res) => {
   const { userId } = req.params;
 
