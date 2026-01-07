@@ -4,6 +4,7 @@
 
 import { pool } from "../db.js";
 import bcrypt from "bcryptjs";
+import { incrementUserCount, decrementUserCount } from "../services/usage-tracker.js";
 
 export const getAllClients = async (req, res) => {
   const { status, search, page = 1, limit = 1000 } = req.query;
@@ -593,6 +594,7 @@ export const createUser = async (req, res) => {
     return res.status(400).json({ error: "PasswordTooShort" });
   }
 
+  // Check if email already exists
   const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
   if (existing.rows.length > 0) {
     return res.status(409).json({ error: "EmailAlreadyExists" });
@@ -600,10 +602,10 @@ export const createUser = async (req, res) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
   
-  // ✅ UPDATED: Assign new user to admin's company (super admin can override)
+  // Determine target company
   const targetCompanyId = req.body.companyId || req.companyId;
   
-  // ✅ UPDATED: Only super admin can assign to different company
+  // Only super admin can assign to different company
   if (targetCompanyId !== req.companyId && !req.isSuperAdmin) {
     return res.status(403).json({ 
       error: "Forbidden",
@@ -611,7 +613,7 @@ export const createUser = async (req, res) => {
     });
   }
 
-  // ✅ UPDATED: Only super admin can create admins
+  // Only super admin can create admins
   if (isAdmin && !req.isSuperAdmin) {
     return res.status(403).json({ 
       error: "Forbidden",
@@ -619,32 +621,57 @@ export const createUser = async (req, res) => {
     });
   }
 
-  // ✅ UPDATED: Include company_id in INSERT
-  const userResult = await pool.query(
-    `INSERT INTO users (email, password, is_admin, company_id)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, email, is_admin, company_id, created_at`,
-    [email, hashedPassword, isAdmin, targetCompanyId]
-  );
-
-  const user = userResult.rows[0];
+  // ============================================
+  // ATOMIC TRANSACTION: Create User + Increment Counter
+  // ============================================
   
-  await pool.query(
-    `INSERT INTO profiles (user_id, full_name, department, work_hours_start, work_hours_end)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [user.id, fullName || null, department || null, workHoursStart || null, workHoursEnd || null]
-  );
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
 
-  console.log(`✅ Admin created user: ${email} (Admin: ${isAdmin})`);
-  res.status(201).json({ 
-    message: "UserCreated", 
-    user: {
-      ...user,
-      full_name: fullName,
-      department
-    }
-  });
+    // Create user
+    const userResult = await client.query(
+      `INSERT INTO users (email, password, is_admin, company_id)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, email, is_admin, company_id, created_at`,
+      [email, hashedPassword, isAdmin, targetCompanyId]
+    );
+
+    const user = userResult.rows[0];
+    
+    // Create profile
+    await client.query(
+      `INSERT INTO profiles (user_id, full_name, department, work_hours_start, work_hours_end)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [user.id, fullName || null, department || null, workHoursStart || null, workHoursEnd || null]
+    );
+
+    // ✅ INCREMENT USER COUNT ATOMICALLY
+    await incrementUserCount(targetCompanyId, client);
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Admin created user: ${email} (Admin: ${isAdmin}) - Counter updated`);
+    
+    res.status(201).json({ 
+      message: "UserCreated", 
+      user: {
+        ...user,
+        full_name: fullName,
+        department
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ User creation failed:', error);
+    res.status(500).json({ error: 'UserCreationFailed', message: error.message });
+  } finally {
+    client.release();
+  }
 };
+
 
 // Update user (admin version)
 export const updateUser = async (req, res) => {
@@ -736,7 +763,7 @@ export const updateUser = async (req, res) => {
 export const deleteUser = async (req, res) => {
   const { userId } = req.params;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
+  // Verify user belongs to admin's company (unless super admin)
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
   const checkParams = [userId];
   if (!req.isSuperAdmin) {
@@ -744,7 +771,7 @@ export const deleteUser = async (req, res) => {
   }
 
   const userCheck = await pool.query(
-    `SELECT id, email FROM users WHERE id = $1 ${companyFilter}`,
+    `SELECT id, email, company_id FROM users WHERE id = $1 ${companyFilter}`,
     checkParams
   );
 
@@ -758,12 +785,36 @@ export const deleteUser = async (req, res) => {
   }
 
   const userEmail = userCheck.rows[0].email;
+  const userCompanyId = userCheck.rows[0].company_id;
 
-  // Hard delete - CASCADE will handle related data
-  await pool.query("DELETE FROM users WHERE id = $1", [userId]);
+  // ============================================
+  // ATOMIC TRANSACTION: Delete User + Decrement Counter
+  // ============================================
+  
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
 
-  console.log(`🗑️ Admin deleted user: ${userEmail} (${userId})`);
-  res.json({ message: "UserDeleted", email: userEmail });
+    // Delete user (CASCADE will handle related data)
+    await client.query("DELETE FROM users WHERE id = $1", [userId]);
+
+    // ✅ DECREMENT USER COUNT ATOMICALLY
+    await decrementUserCount(userCompanyId, client);
+
+    await client.query('COMMIT');
+
+    console.log(`🗑️ Admin deleted user: ${userEmail} (${userId}) - Counter updated`);
+    
+    res.json({ message: "UserDeleted", email: userEmail });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ User deletion failed:', error);
+    res.status(500).json({ error: 'UserDeletionFailed', message: error.message });
+  } finally {
+    client.release();
+  }
 };
 
 // Reset user password (admin function)
