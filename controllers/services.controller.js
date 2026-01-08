@@ -2,6 +2,10 @@
 // UPDATED: All queries now filter by company_id
 
 import { pool } from "../db.js";
+import { 
+  incrementServiceCount, 
+  decrementServiceCount 
+} from "../services/usage-tracker.js";
 
 // Get services for ONE specific client
 export const getClientServices = async (req, res) => {
@@ -205,6 +209,11 @@ export const createService = async (req, res) => {
       ]
     );
 
+    if (status === 'active') {
+      await incrementServiceCount(req.companyId, client);
+    }
+
+
     // ✅ UPDATED: Include company_id in history INSERT
     await client.query(
       `INSERT INTO client_service_history (service_id, action, changed_by, changes, company_id)
@@ -290,6 +299,14 @@ export const updateService = async (req, res) => {
       ]
     );
 
+    if (oldService.status !== status) {
+      if (oldService.status === 'active' && status === 'inactive') {
+        await decrementServiceCount(req.companyId, client);
+      } else if (oldService.status === 'inactive' && status === 'active') {
+        await incrementServiceCount(req.companyId, client);
+      }
+    }
+
     const changes = {};
     Object.keys(result.rows[0]).forEach(key => {
       if (oldService[key] !== result.rows[0][key] && 
@@ -344,6 +361,9 @@ export const deleteService = async (req, res) => {
       return res.status(404).json({ error: "Service not found" });
     }
 
+    const service = serviceResult.rows[0];
+
+
     // ✅ UPDATED: Include company_id in history INSERT
     await client.query(
       `INSERT INTO client_service_history (service_id, action, changed_by, changes, company_id)
@@ -352,6 +372,9 @@ export const deleteService = async (req, res) => {
     );
 
     await client.query('DELETE FROM client_services WHERE id = $1', [serviceId]);
+    if (service.status === 'active') {
+      await decrementServiceCount(req.companyId, client);
+    }
 
     await client.query('COMMIT');
 

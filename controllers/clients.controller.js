@@ -1,11 +1,11 @@
-// controllers/clients.controller.js
-// UPDATED: All queries now filter by company_id
+// controllers/clients.controller.js - UPDATED with quota tracking
+// Added atomic counter updates for client operations
 
 import xlsx from "xlsx";
 import { pool } from "../db.js";
 import { getCoordinatesFromPincode, getCoordinatesFromAddress, getPincodeFromCoordinates } from "../services/geocoding.service.js";
 import { startBackgroundGeocode } from "../utils/geocodeBatch.js";
-
+import { incrementClientCount, decrementClientCount } from "../services/usage-tracker.js";
 
 const CLIENT_SELECT_FIELDS = `
   id, 
@@ -21,9 +21,9 @@ const CLIENT_SELECT_FIELDS = `
   created_by as "createdBy", 
   created_at as "createdAt", 
   updated_at as "updatedAt",
-  last_visit_date as "lastVisitDate",      -- ✅ CRITICAL: Add this alias
-  last_visit_type as "lastVisitType",      -- ✅ CRITICAL: Add this alias
-  last_visit_notes as "lastVisitNotes",    -- ✅ CRITICAL: Add this alias
+  last_visit_date as "lastVisitDate",
+  last_visit_type as "lastVisitType",
+  last_visit_notes as "lastVisitNotes",
   CASE 
     WHEN latitude IS NOT NULL AND longitude IS NOT NULL 
     THEN true 
@@ -31,8 +31,11 @@ const CLIENT_SELECT_FIELDS = `
   END as "hasLocation"
 `;
 
+// ============================================
+// ✅ UPDATED: UPLOAD EXCEL WITH QUOTA TRACKING
+// ============================================
 export const uploadExcel = async (req, res) => {
-  const client = await pool.connect();
+  const dbClient = await pool.connect();
   
   try {
     if (!req.file) {
@@ -55,7 +58,7 @@ export const uploadExcel = async (req, res) => {
 
     console.log(`📊 Processing ${rows.length} rows...`);
 
-    await client.query("BEGIN");
+    await dbClient.query("BEGIN");
 
     let imported = 0;
     let updated = 0;
@@ -132,17 +135,17 @@ export const uploadExcel = async (req, res) => {
         }
       }
 
-      // ✅ UPDATED: Check for duplicates WITHIN THE SAME COMPANY
+      // Check for duplicates
       let duplicateCheck = { rows: [] };
       
       if (email) {
-        duplicateCheck = await client.query(
+        duplicateCheck = await dbClient.query(
           `SELECT id FROM clients 
            WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) 
            AND created_by = $2
            AND company_id = $3
            LIMIT 1`,
-          [email, req.user.id, req.companyId] // ← Added company_id
+          [email, req.user.id, req.companyId]
         );
       }
       
@@ -150,13 +153,13 @@ export const uploadExcel = async (req, res) => {
         const cleanPhone = phone.replace(/\D/g, '');
         
         if (cleanPhone.length >= 10) {
-          duplicateCheck = await client.query(
+          duplicateCheck = await dbClient.query(
             `SELECT id FROM clients 
              WHERE REGEXP_REPLACE(phone, '\\D', '', 'g') = $1 
              AND created_by = $2
              AND company_id = $3
              LIMIT 1`,
-            [cleanPhone, req.user.id, req.companyId] // ← Added company_id
+            [cleanPhone, req.user.id, req.companyId]
           );
         }
       }
@@ -165,23 +168,23 @@ export const uploadExcel = async (req, res) => {
         const cleanName = name.toLowerCase().trim().replace(/[^a-z0-9\s]/g, '');
         
         if (pincode) {
-          duplicateCheck = await client.query(
+          duplicateCheck = await dbClient.query(
             `SELECT id FROM clients 
              WHERE LOWER(TRIM(REGEXP_REPLACE(name, '[^a-zA-Z0-9\\s]', '', 'g'))) = $1 
              AND pincode = $2
              AND created_by = $3
              AND company_id = $4
              LIMIT 1`,
-            [cleanName, pincode, req.user.id, req.companyId] // ← Added company_id
+            [cleanName, pincode, req.user.id, req.companyId]
           );
         } else {
-          duplicateCheck = await client.query(
+          duplicateCheck = await dbClient.query(
             `SELECT id FROM clients 
              WHERE LOWER(TRIM(REGEXP_REPLACE(name, '[^a-zA-Z0-9\\s]', '', 'g'))) = $1
              AND created_by = $2
              AND company_id = $3
              LIMIT 1`,
-            [cleanName, req.user.id, req.companyId] // ← Added company_id
+            [cleanName, req.user.id, req.companyId]
           );
         }
       }
@@ -190,7 +193,7 @@ export const uploadExcel = async (req, res) => {
       if (duplicateCheck.rows.length > 0) {
         const existingId = duplicateCheck.rows[0].id;
         
-        await client.query(
+        await dbClient.query(
           `UPDATE clients 
            SET 
              email = COALESCE($1, email),
@@ -203,27 +206,30 @@ export const uploadExcel = async (req, res) => {
              status = $8,
              updated_at = NOW()
            WHERE id = $9 AND created_by = $10 AND company_id = $11`,
-          [email, phone, address, latitude, longitude, pincode, note, status, existingId, req.user.id, req.companyId] // ← Added company_id
+          [email, phone, address, latitude, longitude, pincode, note, status, existingId, req.user.id, req.companyId]
         );
 
         updated++;
         console.log(`🔄 Updated: ${name} (ID: ${existingId})`);
         
       } else {
-        // ✅ UPDATED: Include company_id in INSERT
-        await client.query(
+        // ✅ INSERT WITH COUNTER INCREMENT
+        await dbClient.query(
           `INSERT INTO clients
            (name, email, phone, address, latitude, longitude, status, notes, created_by, source, pincode, company_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-          [name, email, phone, address, latitude, longitude, status, note, req.user.id, source, pincode, req.companyId] // ← Added company_id
+          [name, email, phone, address, latitude, longitude, status, note, req.user.id, source, pincode, req.companyId]
         );
+
+        // ✅ INCREMENT CLIENT COUNT
+        await incrementClientCount(req.companyId, dbClient);
 
         imported++;
         console.log(`✅ Imported: ${name}`);
       }
     }
 
-    await client.query("COMMIT");
+    await dbClient.query("COMMIT");
 
     const summary = {
       total: rows.length,
@@ -234,7 +240,6 @@ export const uploadExcel = async (req, res) => {
 
     console.log("✅ Upload completed:", summary);
 
-    // Trigger background geocoding
     startBackgroundGeocode();
 
     res.json({
@@ -243,7 +248,7 @@ export const uploadExcel = async (req, res) => {
     });
 
   } catch (error) {
-    await client.query("ROLLBACK");
+    await dbClient.query("ROLLBACK");
     console.error("❌ Upload error:", error);
     
     res.status(500).json({ 
@@ -251,10 +256,13 @@ export const uploadExcel = async (req, res) => {
       message: error.message 
     });
   } finally {
-    client.release();
+    dbClient.release();
   }
 };
 
+// ============================================
+// ✅ UPDATED: CREATE CLIENT WITH QUOTA TRACKING
+// ============================================
 export const createClient = async (req, res) => {
   const { name, email, phone, address, latitude, longitude, status, notes } = req.body;
 
@@ -267,20 +275,40 @@ export const createClient = async (req, res) => {
     pincode = await getPincodeFromCoordinates(latitude, longitude);
   }
 
-  // ✅ UPDATED: Include company_id in INSERT
-  const result = await pool.query(
-    `INSERT INTO clients (name, email, phone, address, latitude, longitude, status, notes, pincode, created_by, company_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-     RETURNING ${CLIENT_SELECT_FIELDS}`,
-    [name, email || null, phone || null, address || null, latitude || null, longitude || null, status || "active", notes || null, pincode, req.user.id, req.companyId] // ← Added company_id
-  );
+  // ============================================
+  // ✅ ATOMIC TRANSACTION: Create + Increment
+  // ============================================
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
 
-  console.log(`✅ Client created: ${name} (Pincode: ${pincode || 'N/A'})`);
+    const result = await client.query(
+      `INSERT INTO clients (name, email, phone, address, latitude, longitude, status, notes, pincode, created_by, company_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING ${CLIENT_SELECT_FIELDS}`,
+      [name, email || null, phone || null, address || null, latitude || null, longitude || null, status || "active", notes || null, pincode, req.user.id, req.companyId]
+    );
 
-  res.status(201).json({
-    message: "ClientCreated",
-    client: result.rows[0],
-  });
+    // ✅ INCREMENT CLIENT COUNT ATOMICALLY
+    await incrementClientCount(req.companyId, client);
+
+    await client.query('COMMIT');
+
+    console.log(`✅ Client created: ${name} (Pincode: ${pincode || 'N/A'}) - Quota updated`);
+
+    res.status(201).json({
+      message: "ClientCreated",
+      client: result.rows[0],
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Client creation failed:', error);
+    res.status(500).json({ error: "ClientCreationFailed", message: error.message });
+  } finally {
+    client.release();
+  }
 };
 
 export const getClients = async (req, res) => {
@@ -296,17 +324,16 @@ export const getClients = async (req, res) => {
 
   console.log(`👤 Fetching clients for user: ${req.user.id} | Company: ${req.companyId} | Mode: ${searchMode}`);
 
-  // ✅ UPDATED: Add company filter to all queries
   if (searchMode === 'remote') {
     console.log(`🌐 Remote search mode`);
 
     let query = `
       SELECT ${CLIENT_SELECT_FIELDS}
-  FROM clients
-  WHERE company_id = $1
-  AND (created_by IS NULL OR created_by = $2)
+      FROM clients
+      WHERE company_id = $1
+      AND (created_by IS NULL OR created_by = $2)
     `;
-    const params = [req.companyId, req.user.id]; // ← Added company_id filter
+    const params = [req.companyId, req.user.id];
     let paramCount = 2;
 
     if (search && search.trim()) {
@@ -335,19 +362,18 @@ export const getClients = async (req, res) => {
     }
 
     query += `
-  ORDER BY 
-    last_visit_date DESC NULLS LAST,
-    created_at DESC
-  LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
-`;
+      ORDER BY 
+        last_visit_date DESC NULLS LAST,
+        created_at DESC
+      LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}
+    `;
 
     params.push(parseInt(limit), parseInt(offset));
 
     const result = await pool.query(query, params);
 
-    // Count query
     let countQuery = "SELECT COUNT(*) FROM clients WHERE company_id = $1 AND (created_by IS NULL OR created_by = $2)";
-    const countParams = [req.companyId, req.user.id]; // ← Added company_id filter
+    const countParams = [req.companyId, req.user.id];
     let countParamIndex = 2;
 
     if (search && search.trim()) {
@@ -392,7 +418,7 @@ export const getClients = async (req, res) => {
     });
   }
 
-  // LOCAL MODE - Filter by user's pincode
+  // LOCAL MODE
   const userPincode = (await pool.query("SELECT pincode FROM users WHERE id = $1", [req.user.id])).rows[0]?.pincode;
   
   if (!userPincode) {
@@ -404,7 +430,6 @@ export const getClients = async (req, res) => {
 
   console.log(`📍 Local search mode - filtering by pincode: ${userPincode}`);
 
-  // ✅ UPDATED: Add company filter
   let query = `
     SELECT ${CLIENT_SELECT_FIELDS}
     FROM clients
@@ -412,7 +437,7 @@ export const getClients = async (req, res) => {
     AND company_id = $2
     AND (created_by IS NULL OR created_by = $3)
   `;
-  const params = [userPincode, req.companyId, req.user.id]; // ← Added company_id filter
+  const params = [userPincode, req.companyId, req.user.id];
   let paramCount = 3;
 
   if (status) {
@@ -433,7 +458,7 @@ export const getClients = async (req, res) => {
   const result = await pool.query(query, params);
 
   let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND company_id = $2 AND (created_by IS NULL OR created_by = $3)";
-  const countParams = [userPincode, req.companyId, req.user.id]; // ← Added company_id filter
+  const countParams = [userPincode, req.companyId, req.user.id];
   let countParamIndex = 3;
 
   if (status) {
@@ -468,14 +493,12 @@ export const getClients = async (req, res) => {
 };
 
 export const getClientById = async (req, res) => {
-  // ✅ UPDATED: Add company filter
   const result = await pool.query(
-  `SELECT ${CLIENT_SELECT_FIELDS}
-   FROM clients
-   WHERE id = $1 AND company_id = $2`,
-  [req.params.id, req.companyId]
-);
-
+    `SELECT ${CLIENT_SELECT_FIELDS}
+     FROM clients
+     WHERE id = $1 AND company_id = $2`,
+    [req.params.id, req.companyId]
+  );
 
   if (result.rows.length === 0) {
     return res.status(404).json({ error: "ClientNotFound" });
@@ -492,13 +515,12 @@ export const updateClient = async (req, res) => {
     pincode = await getPincodeFromCoordinates(latitude, longitude);
   }
 
-  // ✅ UPDATED: Add company filter
   const result = await pool.query(
     `UPDATE clients 
      SET name = $1, email = $2, phone = $3, address = $4, latitude = $5, longitude = $6, status = $7, notes = $8, pincode = $9
      WHERE id = $10 AND company_id = $11
      RETURNING ${CLIENT_SELECT_FIELDS}`,
-    [name, email, phone, address, latitude, longitude, status, notes, pincode, req.params.id, req.companyId] // ← Added company_id filter
+    [name, email, phone, address, latitude, longitude, status, notes, pincode, req.params.id, req.companyId]
   );
 
   if (result.rows.length === 0) {
@@ -511,16 +533,42 @@ export const updateClient = async (req, res) => {
   });
 };
 
+// ============================================
+// ✅ UPDATED: DELETE CLIENT WITH QUOTA TRACKING
+// ============================================
 export const deleteClient = async (req, res) => {
-  // ✅ UPDATED: Add company filter
-  const result = await pool.query(
-    "DELETE FROM clients WHERE id = $1 AND company_id = $2 RETURNING id",
-    [req.params.id, req.companyId] // ← Added company_id filter
-  );
+  // ============================================
+  // ✅ ATOMIC TRANSACTION: Delete + Decrement
+  // ============================================
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
 
-  if (result.rows.length === 0) {
-    return res.status(404).json({ error: "ClientNotFound" });
+    const result = await client.query(
+      "DELETE FROM clients WHERE id = $1 AND company_id = $2 RETURNING id, name",
+      [req.params.id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "ClientNotFound" });
+    }
+
+    // ✅ DECREMENT CLIENT COUNT ATOMICALLY
+    await decrementClientCount(req.companyId, client);
+
+    await client.query('COMMIT');
+
+    console.log(`🗑️ Client deleted: ${result.rows[0].name} - Quota updated`);
+
+    res.json({ message: "ClientDeleted" });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Client deletion failed:', error);
+    res.status(500).json({ error: "ClientDeletionFailed", message: error.message });
+  } finally {
+    client.release();
   }
-
-  res.json({ message: "ClientDeleted" });
 };

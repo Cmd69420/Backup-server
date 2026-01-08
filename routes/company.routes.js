@@ -10,6 +10,14 @@ const router = express.Router();
 // All routes require authentication + super admin role
 router.use(authenticateToken, requireSuperAdmin);
 
+
+
+//On demand company data
+router.get("/fast-list", asyncHandler(companyController.getFastCompanyList));
+router.get("/:companyId/stats-on-demand", asyncHandler(companyController.getCompanyStatsOnDemand));
+router.get("/:companyId/users-on-demand", asyncHandler(companyController.getCompanyUsersOnDemand));
+router.get("/:companyId/clients-on-demand", asyncHandler(companyController.getCompanyClientsOnDemand));
+
 // Company CRUD
 router.post("/", asyncHandler(companyController.createCompany));
 router.get("/", asyncHandler(companyController.getAllCompanies));

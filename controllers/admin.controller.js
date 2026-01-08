@@ -1,6 +1,5 @@
-// controllers/admin.controller.js - PART 1
-// UPDATED: All queries now filter by company_id
-// Super admins can view all companies, regular admins only their company
+// controllers/admin.controller.js - COMPLETE UPDATE
+// Added quota tracking to user operations
 
 import { pool } from "../db.js";
 import bcrypt from "bcryptjs";
@@ -10,12 +9,10 @@ export const getAllClients = async (req, res) => {
   const { status, search, page = 1, limit = 1000 } = req.query;
   const offset = (page - 1) * limit;
 
-  // ✅ UPDATED: Add company_id filter (unless super admin)
   let query = "SELECT * FROM clients WHERE 1=1";
   const params = [];
   let paramCount = 0;
 
-  // Super admin can view all companies, regular admin only their company
   if (!req.isSuperAdmin) {
     paramCount++;
     query += ` AND company_id = $${paramCount}`;
@@ -39,7 +36,6 @@ export const getAllClients = async (req, res) => {
 
   const result = await pool.query(query, params);
   
-  // ✅ UPDATED: Add company_id filter to count query
   let countQuery = "SELECT COUNT(*) FROM clients WHERE 1=1";
   const countParams = [];
   let countParamCount = 0;
@@ -81,7 +77,6 @@ export const getAllClients = async (req, res) => {
 export const getAllUsers = async (req, res) => {
   const { limit = 1000 } = req.query;
   
-  // ✅ UPDATED: Add company_id filter (unless super admin)
   let query = `
     SELECT u.id, u.email, u.created_at, u.pincode, u.is_admin, u.is_super_admin,
            p.full_name, p.department, p.work_hours_start, p.work_hours_end
@@ -106,11 +101,9 @@ export const getAllUsers = async (req, res) => {
 };
 
 export const getAnalytics = async (req, res) => {
-  // ✅ UPDATED: Add company_id filter to all analytics queries
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $1';
   const params = req.isSuperAdmin ? [] : [req.companyId];
 
-  // Basic client stats
   const clientStats = await pool.query(`
     SELECT 
       COUNT(*) as total_clients,
@@ -133,12 +126,10 @@ export const getAnalytics = async (req, res) => {
     WHERE 1=1 ${companyFilter}
   `, params);
 
-  // Calculate GPS coverage percentage
   const totalClients = parseInt(clientStats.rows[0].total_clients);
   const withCoords = parseInt(clientStats.rows[0].clients_with_location);
   const coveragePercent = totalClients > 0 ? ((withCoords / totalClients) * 100).toFixed(1) : 0;
 
-  // Monthly trends (last 6 months)
   const trendsData = await pool.query(`
     SELECT 
       TO_CHAR(DATE_TRUNC('month', created_at), 'Mon') as month,
@@ -152,7 +143,6 @@ export const getAnalytics = async (req, res) => {
     ORDER BY DATE_TRUNC('month', created_at)
   `, params);
 
-  // Top 5 areas by client count
   const topAreas = await pool.query(`
     SELECT 
       pincode as area,
@@ -165,7 +155,6 @@ export const getAnalytics = async (req, res) => {
     LIMIT 5
   `, params);
 
-  // User leaderboard
   const userLeaderboard = await pool.query(`
     SELECT
       u.id,
@@ -183,7 +172,6 @@ export const getAnalytics = async (req, res) => {
     LIMIT 5
   `, params);
 
-  // Recent activity stats (last 30 days)
   const recentActivity = await pool.query(`
     SELECT
       (SELECT COUNT(*) 
@@ -202,7 +190,6 @@ export const getAnalytics = async (req, res) => {
        ${companyFilter}) AS new_clients_last_month
   `, params);
 
-  // Inactive clients (no meetings in 30 days)
   const inactiveClients = await pool.query(`
     SELECT COUNT(*) as inactive_count
     FROM clients c
@@ -242,9 +229,6 @@ export const getUserLocationLogs = async (req, res) => {
   const offset = (page - 1) * limit;
   const userId = req.params.userId;
 
-  console.log(`📊 Fetching logs for user ${userId}, admin company: ${req.companyId}, isSuperAdmin: ${req.isSuperAdmin}`);
-
-  // ✅ Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -252,43 +236,30 @@ export const getUserLocationLogs = async (req, res) => {
     );
     
     if (userCheck.rows.length === 0) {
-      console.log(`❌ User ${userId} not found in company ${req.companyId}`);
       return res.status(404).json({ error: "UserNotFound" });
     }
   }
 
-  // ✅ FIX: Build params array correctly based on admin type
-  let query, params, countQuery, countParams;
-  
-  if (req.isSuperAdmin) {
-    // Super admin: No company filter
-    query = `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
-             FROM location_logs
-             WHERE user_id = $1
-             ORDER BY timestamp DESC
-             LIMIT $2 OFFSET $3`;
-    params = [userId, parseInt(limit), parseInt(offset)];
-    
-    countQuery = `SELECT COUNT(*) FROM location_logs WHERE user_id = $1`;
-    countParams = [userId];
-    
-  } else {
-    // Regular admin: Include company filter
-    query = `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
-             FROM location_logs
-             WHERE user_id = $1 AND company_id = $2
-             ORDER BY timestamp DESC
-             LIMIT $3 OFFSET $4`;
-    params = [userId, req.companyId, parseInt(limit), parseInt(offset)];
-    
-    countQuery = `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 AND company_id = $2`;
-    countParams = [userId, req.companyId];
+  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $3';
+  const params = [userId, limit, offset];
+  if (!req.isSuperAdmin) {
+    params.splice(2, 0, req.companyId);
   }
 
-  console.log(`🔍 Query params:`, params);
+  const result = await pool.query(
+    `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
+     FROM location_logs
+     WHERE user_id = $1
+     ${companyFilter}
+     ORDER BY timestamp DESC
+     LIMIT $2 OFFSET $${!req.isSuperAdmin ? 4 : 3}`,
+    params
+  );
 
-  const result = await pool.query(query, params);
-  const countResult = await pool.query(countQuery, countParams);
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 ${companyFilter}`,
+    req.isSuperAdmin ? [userId] : [userId, req.companyId]
+  );
 
   console.log(`✅ Fetched ${result.rows.length} logs for user ${userId}`);
 
@@ -302,10 +273,10 @@ export const getUserLocationLogs = async (req, res) => {
     }
   });
 };
+
 export const getClockStatus = async (req, res) => {
   const { userId } = req.params;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -317,7 +288,6 @@ export const getClockStatus = async (req, res) => {
     }
   }
 
-  // ✅ UPDATED: Add company_id filter
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
   const params = [userId];
   if (!req.isSuperAdmin) {
@@ -350,7 +320,6 @@ export const getClockStatus = async (req, res) => {
 };
 
 export const getExpensesSummary = async (req, res) => {
-  // ✅ UPDATED: Add company_id filter
   const companyFilter = req.isSuperAdmin ? '' : 'WHERE u.company_id = $1';
   const params = req.isSuperAdmin ? [] : [req.companyId];
 
@@ -369,13 +338,13 @@ export const getExpensesSummary = async (req, res) => {
 
   res.json({ summary: result.rows });
 };
+
 export const getUserMeetings = async (req, res) => {
   const userId = req.params.userId;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const offset = (page - 1) * limit;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -387,21 +356,19 @@ export const getUserMeetings = async (req, res) => {
     }
   }
 
-  // ✅ UPDATED: Add company_id filter
   const companyFilter = req.isSuperAdmin ? '' : 'AND m.company_id = $4';
   const params = [userId, limit, offset];
   if (!req.isSuperAdmin) {
     params.push(req.companyId);
   }
 
-  // FIXED total count query
-const totalCountResult = await pool.query(
-  `SELECT COUNT(*)
-   FROM meetings m
-   WHERE m.user_id = $1
-   ${req.isSuperAdmin ? '' : 'AND m.company_id = $2'}`,
-  req.isSuperAdmin ? [userId] : [userId, req.companyId]
-);
+  const totalCountResult = await pool.query(
+    `SELECT COUNT(*)
+     FROM meetings m
+     WHERE m.user_id = $1
+     ${req.isSuperAdmin ? '' : 'AND m.company_id = $2'}`,
+    req.isSuperAdmin ? [userId] : [userId, req.companyId]
+  );
 
   const totalCount = parseInt(totalCountResult.rows[0].count);
 
@@ -447,15 +414,12 @@ const totalCountResult = await pool.query(
   });
 };
 
-// In controllers/admin.controller.js
-
 export const getUserExpenses = async (req, res) => {
   const userId = req.params.userId;
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 50;
   const offset = (page - 1) * limit;
 
-  // Verify user belongs to admin's company (unless super admin)
   if (!req.isSuperAdmin) {
     const userCheck = await pool.query(
       "SELECT id FROM users WHERE id = $1 AND company_id = $2",
@@ -484,7 +448,6 @@ export const getUserExpenses = async (req, res) => {
     req.isSuperAdmin ? [userId, limit, offset] : [userId, req.companyId, limit, offset]
   );
 
-  // ✅ Transform and fetch legs
   const transformExpenseRow = (row) => ({
     id: row.id,
     userId: row.user_id,
@@ -520,7 +483,6 @@ export const getUserExpenses = async (req, res) => {
 
   const expenses = logsResult.rows.map(transformExpenseRow);
 
-  // Fetch legs for multi-leg expenses
   for (const expense of expenses) {
     if (expense.isMultiLeg) {
       const legsResult = await pool.query(
@@ -552,11 +514,9 @@ export const checkAdminStatus = (req, res) => {
   });
 };
 
-// Get single user details
 export const getUserDetails = async (req, res) => {
   const { userId } = req.params;
 
-  // ✅ UPDATED: Add company_id filter (unless super admin)
   const companyFilter = req.isSuperAdmin ? '' : 'AND u.company_id = $2';
   const params = [userId];
   if (!req.isSuperAdmin) {
@@ -582,7 +542,9 @@ export const getUserDetails = async (req, res) => {
   res.json({ user: result.rows[0] });
 };
 
-// Create user (admin version)
+// ============================================
+// ✅ UPDATED: CREATE USER WITH QUOTA TRACKING
+// ============================================
 export const createUser = async (req, res) => {
   const { email, password, fullName, department, workHoursStart, workHoursEnd, isAdmin = false } = req.body;
   
@@ -594,7 +556,6 @@ export const createUser = async (req, res) => {
     return res.status(400).json({ error: "PasswordTooShort" });
   }
 
-  // Check if email already exists
   const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
   if (existing.rows.length > 0) {
     return res.status(409).json({ error: "EmailAlreadyExists" });
@@ -602,10 +563,8 @@ export const createUser = async (req, res) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
   
-  // Determine target company
   const targetCompanyId = req.body.companyId || req.companyId;
   
-  // Only super admin can assign to different company
   if (targetCompanyId !== req.companyId && !req.isSuperAdmin) {
     return res.status(403).json({ 
       error: "Forbidden",
@@ -613,7 +572,6 @@ export const createUser = async (req, res) => {
     });
   }
 
-  // Only super admin can create admins
   if (isAdmin && !req.isSuperAdmin) {
     return res.status(403).json({ 
       error: "Forbidden",
@@ -622,15 +580,13 @@ export const createUser = async (req, res) => {
   }
 
   // ============================================
-  // ATOMIC TRANSACTION: Create User + Increment Counter
+  // ✅ ATOMIC TRANSACTION: Create + Increment
   // ============================================
-  
   const client = await pool.connect();
   
   try {
     await client.query('BEGIN');
 
-    // Create user
     const userResult = await client.query(
       `INSERT INTO users (email, password, is_admin, company_id)
        VALUES ($1, $2, $3, $4)
@@ -640,7 +596,6 @@ export const createUser = async (req, res) => {
 
     const user = userResult.rows[0];
     
-    // Create profile
     await client.query(
       `INSERT INTO profiles (user_id, full_name, department, work_hours_start, work_hours_end)
        VALUES ($1, $2, $3, $4, $5)`,
@@ -652,7 +607,7 @@ export const createUser = async (req, res) => {
 
     await client.query('COMMIT');
 
-    console.log(`✅ Admin created user: ${email} (Admin: ${isAdmin}) - Counter updated`);
+    console.log(`✅ Admin created user: ${email} (Admin: ${isAdmin}) - Quota updated`);
     
     res.status(201).json({ 
       message: "UserCreated", 
@@ -666,19 +621,16 @@ export const createUser = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ User creation failed:', error);
-    res.status(500).json({ error: 'UserCreationFailed', message: error.message });
+    res.status(500).json({ error: "UserCreationFailed", message: error.message });
   } finally {
     client.release();
   }
 };
 
-
-// Update user (admin version)
 export const updateUser = async (req, res) => {
   const { userId } = req.params;
   const { email, fullName, department, workHoursStart, workHoursEnd, isAdmin } = req.body;
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
   const checkParams = [userId];
   if (!req.isSuperAdmin) {
@@ -694,7 +646,6 @@ export const updateUser = async (req, res) => {
     return res.status(404).json({ error: "UserNotFound" });
   }
 
-  // ✅ UPDATED: Only super admin can change admin status
   if (isAdmin !== undefined && !req.isSuperAdmin) {
     return res.status(403).json({ 
       error: "Forbidden",
@@ -702,7 +653,6 @@ export const updateUser = async (req, res) => {
     });
   }
 
-  // Update users table (email and is_admin)
   if (email !== undefined || isAdmin !== undefined) {
     let query = "UPDATE users SET";
     const params = [];
@@ -736,7 +686,6 @@ export const updateUser = async (req, res) => {
     await pool.query(query, params);
   }
 
-  // Update profiles table
   const profileResult = await pool.query(
     `UPDATE profiles 
      SET full_name = COALESCE($1, full_name),
@@ -759,11 +708,12 @@ export const updateUser = async (req, res) => {
   });
 };
 
-// Delete user (hard delete)
+// ============================================
+// ✅ UPDATED: DELETE USER WITH QUOTA TRACKING
+// ============================================
 export const deleteUser = async (req, res) => {
   const { userId } = req.params;
 
-  // Verify user belongs to admin's company (unless super admin)
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
   const checkParams = [userId];
   if (!req.isSuperAdmin) {
@@ -779,7 +729,6 @@ export const deleteUser = async (req, res) => {
     return res.status(404).json({ error: "UserNotFound" });
   }
 
-  // Prevent self-deletion
   if (userId === req.user.id) {
     return res.status(400).json({ error: "CannotDeleteSelf" });
   }
@@ -788,15 +737,13 @@ export const deleteUser = async (req, res) => {
   const userCompanyId = userCheck.rows[0].company_id;
 
   // ============================================
-  // ATOMIC TRANSACTION: Delete User + Decrement Counter
+  // ✅ ATOMIC TRANSACTION: Delete + Decrement
   // ============================================
-  
   const client = await pool.connect();
   
   try {
     await client.query('BEGIN');
 
-    // Delete user (CASCADE will handle related data)
     await client.query("DELETE FROM users WHERE id = $1", [userId]);
 
     // ✅ DECREMENT USER COUNT ATOMICALLY
@@ -804,20 +751,19 @@ export const deleteUser = async (req, res) => {
 
     await client.query('COMMIT');
 
-    console.log(`🗑️ Admin deleted user: ${userEmail} (${userId}) - Counter updated`);
+    console.log(`🗑️ Admin deleted user: ${userEmail} (${userId}) - Quota updated`);
     
     res.json({ message: "UserDeleted", email: userEmail });
 
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ User deletion failed:', error);
-    res.status(500).json({ error: 'UserDeletionFailed', message: error.message });
+    res.status(500).json({ error: "UserDeletionFailed", message: error.message });
   } finally {
     client.release();
   }
 };
 
-// Reset user password (admin function)
 export const resetUserPassword = async (req, res) => {
   const { userId } = req.params;
   const { newPassword } = req.body;
@@ -826,7 +772,6 @@ export const resetUserPassword = async (req, res) => {
     return res.status(400).json({ error: "PasswordTooShort" });
   }
 
-  // ✅ UPDATED: Verify user belongs to admin's company (unless super admin)
   const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
   const checkParams = [userId];
   if (!req.isSuperAdmin) {
@@ -849,7 +794,6 @@ export const resetUserPassword = async (req, res) => {
     [hashedPassword, userId]
   );
 
-  // Invalidate all sessions for this user
   await pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
 
   console.log(`🔑 Admin reset password for user: ${userCheck.rows[0].email}`);

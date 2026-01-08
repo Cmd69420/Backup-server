@@ -27,6 +27,7 @@ import licenseRoutes from './routes/license.routes.js';
 import planRoutes from './routes/plan.routes.js'; // ← NEW
 import quickVisitsRoutes from './routes/quickVisits.routes.js';
 
+
 const app = express();
 
 // Middleware

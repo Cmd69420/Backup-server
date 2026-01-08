@@ -89,13 +89,11 @@ export const getAllCompanies = async (req, res) => {
       c.settings,
       COUNT(DISTINCT u.id) as user_count,
       COUNT(DISTINCT cl.id) as client_count,
-      COUNT(DISTINCT cs.id) as service_count,
-      COUNT(DISTINCT ll.id) as log_count
+      COUNT(DISTINCT cs.id) as service_count
     FROM companies c
     LEFT JOIN users u ON u.company_id = c.id
     LEFT JOIN clients cl ON cl.company_id = c.id
     LEFT JOIN client_services cs ON cs.company_id = c.id
-    LEFT JOIN location_logs ll ON ll.company_id = c.id
     WHERE 1=1
   `;
 

@@ -15,6 +15,9 @@ import {
   enforceTrialUserLimits 
 } from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as clientsController from "../controllers/clients.controller.js";
+import { checkClientQuotaMiddleware } from "../middleware/quotaCheck.js";
+
+
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -37,8 +40,8 @@ router.post("/upload-excel",
 // Blocked for trial users
 router.post("/", 
   authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
-  checkClientCreationLimit,
+  blockTrialUserWrites,
+  checkClientQuotaMiddleware,  // ← ADD THIS LINE
   asyncHandler(clientsController.createClient)
 );
 

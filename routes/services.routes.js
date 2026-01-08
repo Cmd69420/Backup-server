@@ -13,6 +13,7 @@ import {
   enforceTrialUserLimits 
 } from "../middleware/trialUser.js";  // ← NEW IMPORT
 import * as servicesController from "../controllers/services.controller.js";
+import { checkServiceQuotaMiddleware } from "../middleware/quotaCheck.js";
 
 const router = express.Router();
 
@@ -61,10 +62,9 @@ router.get(
 // Professional: Max 10 services per client
 // Business: Max 50 services per client
 // Enterprise: UNLIMITED
-router.post(
-  "/client/:clientId",
+router.post("/client/:clientId", 
   requireRole(['admin', 'editor']),
-  checkServiceCreationLimit,
+  checkServiceQuotaMiddleware,  // ← ADD THIS LINE
   asyncHandler(servicesController.createService)
 );
 
