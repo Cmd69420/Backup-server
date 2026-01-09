@@ -367,13 +367,14 @@ export const getAllPlans = async () => {
  * Get current company usage statistics
  */
 export const getCompanyUsage = async (companyId) => {
-  const [users, clients, services, meetings, expenses, locationLogs] = await Promise.all([
+  const [users, clients, services, meetings, expenses, locationLogs, storage] = await Promise.all([
     pool.query('SELECT COUNT(*) as count FROM users WHERE company_id = $1', [companyId]),
     pool.query('SELECT COUNT(*) as count FROM clients WHERE company_id = $1', [companyId]),
     pool.query('SELECT COUNT(*) as count FROM client_services WHERE company_id = $1', [companyId]),
     pool.query('SELECT COUNT(*) as count FROM meetings WHERE company_id = $1', [companyId]),
     pool.query('SELECT COUNT(*) as count FROM trip_expenses WHERE company_id = $1', [companyId]),
-    pool.query('SELECT COUNT(*) as count FROM location_logs WHERE company_id = $1', [companyId])
+    pool.query('SELECT COUNT(*) as count FROM location_logs WHERE company_id = $1', [companyId]),
+    pool.query('SELECT storage_used_mb FROM company_usage_stats WHERE company_id = $1', [companyId])
   ]);
   
   return {
@@ -382,10 +383,10 @@ export const getCompanyUsage = async (companyId) => {
     services: parseInt(services.rows[0].count),
     meetings: parseInt(meetings.rows[0].count),
     expenses: parseInt(expenses.rows[0].count),
-    locationLogs: parseInt(locationLogs.rows[0].count)
+    locationLogs: parseInt(locationLogs.rows[0].count),
+    storage_used_mb: parseFloat(storage.rows[0]?.storage_used_mb || 0)
   };
 };
-
 // Helper functions
 async function getClientCount(companyId) {
   const result = await pool.query(

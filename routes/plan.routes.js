@@ -13,6 +13,7 @@ import {
   checkClientLimit,
   getCompanyUsage
 } from "../services/plan.service.js";
+import { getCompanyUsageStats } from "../services/usage-tracker.js";
 
 const router = express.Router();
 
@@ -98,33 +99,35 @@ router.get(
     }
 
     // Regular admin or super admin with specific company selected
-    const features = await getCompanyPlanFeatures(req.companyId);
-    const userLimit = await checkUserLimit(req.companyId);
-    const clientLimit = await checkClientLimit(req.companyId);
-    const usage = await getCompanyUsage(req.companyId);
-    
-    res.json({
-      plan: features,
-      usage: {
-        users: {
-          current: userLimit.currentUsers,
-          max: userLimit.maxUsers,
-          remaining: userLimit.remaining,
-          percentage: ((userLimit.currentUsers / userLimit.maxUsers) * 100).toFixed(1)
-        },
-        clients: {
-          current: clientLimit.currentClients,
-          max: clientLimit.maxClients,
-          remaining: clientLimit.unlimited ? null : clientLimit.remaining,
-          unlimited: clientLimit.unlimited,
-          percentage: clientLimit.unlimited ? null : ((clientLimit.currentClients / clientLimit.maxClients) * 100).toFixed(1)
-        },
-        services: usage.services,
-        meetings: usage.meetings,
-        expenses: usage.expenses,
-        locationLogs: usage.locationLogs
-      }
-    });
+const features = await getCompanyPlanFeatures(req.companyId);
+const userLimit = await checkUserLimit(req.companyId);
+const clientLimit = await checkClientLimit(req.companyId);
+const usage = await getCompanyUsage(req.companyId);
+const usageStats = await getCompanyUsageStats(req.companyId); // ✅ ADD THIS LINE
+
+res.json({
+  plan: features,
+  usage: {
+    users: {
+      current: userLimit.currentUsers,
+      max: userLimit.maxUsers,
+      remaining: userLimit.remaining,
+      percentage: ((userLimit.currentUsers / userLimit.maxUsers) * 100).toFixed(1)
+    },
+    clients: {
+      current: clientLimit.currentClients,
+      max: clientLimit.maxClients,
+      remaining: clientLimit.unlimited ? null : clientLimit.remaining,
+      unlimited: clientLimit.unlimited,
+      percentage: clientLimit.unlimited ? null : ((clientLimit.currentClients / clientLimit.maxClients) * 100).toFixed(1)
+    },
+    services: usage.services,
+    meetings: usage.meetings,
+    expenses: usage.expenses,
+    locationLogs: usage.locationLogs,
+    storage_used_mb: usageStats.storage_used_mb || 0 // ✅ ADD THIS LINE
+  }
+});
   })
 );
 
