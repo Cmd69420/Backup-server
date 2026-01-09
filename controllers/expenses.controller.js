@@ -2,6 +2,7 @@
 // MERGED: Multi-leg expenses + Company filtering + Trial user support
 
 import { pool } from "../db.js";
+import { incrementStorageUsed } from "../services/usage-tracker.js";
 
 // ============================================
 // TRANSFORMATION HELPERS
@@ -115,6 +116,8 @@ export const createExpense = async (req, res) => {
     });
   }
 
+  
+
   if (finalAmountSpent === undefined || finalAmountSpent === null) {
     console.error("❌ Missing amount_spent");
     return res.status(400).json({ 
@@ -158,6 +161,24 @@ export const createExpense = async (req, res) => {
 
     const expense = expenseResult.rows[0];
     console.log("✅ Expense created:", expense.id);
+
+    if (finalReceiptImages.length > 0 && req.companyId) {
+    try {
+      let totalSize = 0;
+      for (const image of finalReceiptImages) {
+        const base64Data = image.split(',')[1] || image;
+        const sizeInBytes = Buffer.from(base64Data, 'base64').length;
+        totalSize += sizeInBytes;
+      }
+      const sizeMB = totalSize / (1024 * 1024);
+      
+      await incrementStorageUsed(req.companyId, sizeMB, client); // ✅ Pass transaction client
+      console.log(`✅ Stored ${finalReceiptImages.length} receipts (${sizeMB.toFixed(2)} MB)`);
+    } catch (error) {
+      console.error('❌ Storage tracking failed:', error);
+      // Don't rollback entire transaction if only storage tracking fails
+    }
+  }
 
     let legsData = [];
 
@@ -475,9 +496,25 @@ export const uploadReceipt = async (req, res) => {
   if (!imageData) {
     return res.status(400).json({ error: "ImageRequired" });
   }
+  const base64Data = imageData.split(',')[1] || imageData;
+  const sizeInBytes = Buffer.from(base64Data, 'base64').length;
+  const sizeInMB = sizeInBytes / (1024 * 1024);
+
+  console.log(`📦 Receipt upload: ${fileName} - ${sizeInMB.toFixed(2)} MB`);
+
+  // ✅ Increment storage usage
+  try {
+    await incrementStorageUsed(req.companyId, sizeInMB);
+    console.log(`✅ Storage incremented by ${sizeInMB.toFixed(2)} MB for company ${req.companyId}`);
+  } catch (error) {
+    console.error('❌ Storage increment failed:', error);
+    // Don't fail the upload if storage tracking fails
+  }
 
   res.json({ 
-    imageData: imageData,
-    fileName: fileName 
+   imageData: imageData,
+    fileName: fileName,
+    sizeKB: (sizeInBytes / 1024).toFixed(2),
+    sizeMB: sizeInMB.toFixed(2)
   });
 };
