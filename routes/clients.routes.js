@@ -55,6 +55,14 @@ router.get("/",
   asyncHandler(clientsController.getClients)
 );
 
+
+
+router.patch("/:id/address", 
+  authenticateToken,
+  blockTrialUserWrites,  // Trial users can't edit
+  asyncHandler(clientsController.updateClientAddress)
+);
+
 // ============================================
 // GET SINGLE CLIENT
 // ============================================
