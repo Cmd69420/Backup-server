@@ -2,6 +2,9 @@ import jwt from "jsonwebtoken";
 import { pool } from "../db.js";
 import { JWT_SECRET, MIDDLEWARE_TOKEN } from "../config/constants.js";
 
+// ============================================
+// JWT TOKEN AUTHENTICATION (for users)
+// ============================================
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
@@ -42,6 +45,52 @@ export const authenticateToken = (req, res, next) => {
   });
 };
 
+// ============================================
+// MIDDLEWARE TOKEN AUTHENTICATION (for Tally middleware)
+// ============================================
+export const authenticateMiddleware = (req, res, next) => {
+  console.log('\n🔐 Middleware Auth Check:');
+  console.log('   Headers:', JSON.stringify(req.headers, null, 2));
+  
+  const token = req.headers['x-middleware-token'];
+  
+  if (!token) {
+    console.log('❌ No x-middleware-token header found');
+    return res.status(401).json({ 
+      error: 'MiddlewareTokenRequired',
+      message: 'x-middleware-token header is required' 
+    });
+  }
+
+  const expectedToken = process.env.MIDDLEWARE_TOKEN || MIDDLEWARE_TOKEN;
+  
+  if (!expectedToken) {
+    console.log('❌ MIDDLEWARE_TOKEN not configured in environment');
+    return res.status(500).json({ 
+      error: 'ServerError',
+      message: 'Middleware authentication not configured' 
+    });
+  }
+
+  console.log(`   Received token: ${token.substring(0, 20)}...`);
+  console.log(`   Expected token: ${expectedToken.substring(0, 20)}...`);
+  console.log(`   Match: ${token === expectedToken}`);
+
+  if (token !== expectedToken) {
+    console.log('❌ Token mismatch!');
+    return res.status(401).json({ 
+      error: 'InvalidMiddlewareToken',
+      message: 'Invalid middleware token' 
+    });
+  }
+
+  console.log('✅ Middleware token authenticated');
+  next();
+};
+
+// ============================================
+// OTHER MIDDLEWARE
+// ============================================
 export const requireName = async (req, res, next) => {
   const result = await pool.query(
     "SELECT full_name FROM profiles WHERE user_id = $1",
@@ -62,40 +111,6 @@ export const requireAdmin = (req, res, next) => {
   if (!req.user || !req.user.isAdmin) {
     return res.status(403).json({ error: "AdminOnly" });
   }
-  next();
-};
-
-// ✅ MIDDLEWARE TOKEN AUTHENTICATION (for Tally middleware)
-export const authenticateMiddleware = (req, res, next) => {
-  const token = req.headers['x-middleware-token'];
-  
-  if (!token) {
-    console.log('❌ No middleware token provided');
-    return res.status(401).json({ 
-      error: 'Unauthorized',
-      message: 'Middleware token required' 
-    });
-  }
-
-  const expectedToken = process.env.MIDDLEWARE_TOKEN || MIDDLEWARE_TOKEN;
-  
-  if (!expectedToken) {
-    console.log('❌ MIDDLEWARE_TOKEN not configured in environment');
-    return res.status(500).json({ 
-      error: 'ServerError',
-      message: 'Middleware authentication not configured' 
-    });
-  }
-
-  if (token !== expectedToken) {
-    console.log(`❌ Invalid middleware token: ${token.substring(0, 10)}...`);
-    return res.status(401).json({ 
-      error: 'Unauthorized',
-      message: 'Invalid middleware token' 
-    });
-  }
-
-  console.log('✅ Middleware authenticated');
   next();
 };
 
