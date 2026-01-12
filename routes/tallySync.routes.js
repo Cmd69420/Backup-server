@@ -7,6 +7,20 @@ import * as tallySyncController from "../controllers/tallySync.controller.js";
 
 const router = express.Router();
 
+
+// ============================================
+// MIDDLEWARE POLLING ENDPOINTS (No user auth, uses middleware token)
+// ============================================
+router.get("/pending-for-middleware",
+  authenticateMiddleware, // ← Uses middleware token, not user JWT
+  asyncHandler(tallySyncController.getPendingForMiddleware)
+);
+
+router.post("/complete-from-middleware/:queueId",
+  authenticateMiddleware,
+  asyncHandler(tallySyncController.completeFromMiddleware)
+);
+
 // All routes require authentication + company context
 router.use(authenticateToken, attachCompanyContext);
 

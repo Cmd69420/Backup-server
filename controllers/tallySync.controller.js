@@ -111,7 +111,6 @@ export const getSyncStats = async (req, res) => {
  */
 export const processSyncQueue = async (req, res) => {
   const { batchSize = 20 } = req.body;
-
   const client = await pool.connect();
 
   try {
@@ -119,15 +118,8 @@ export const processSyncQueue = async (req, res) => {
 
     // Get company Tally credentials
     const companyResult = await client.query(
-      `SELECT 
-         id,
-         name,
-         tally_company_name,
-         tally_username,
-         tally_password_encrypted,
-         tally_auto_sync_enabled
-       FROM companies
-       WHERE id = $1`,
+      `SELECT id, name, tally_company_name, tally_username, tally_password_encrypted
+       FROM companies WHERE id = $1`,
       [req.companyId]
     );
 
@@ -142,18 +134,13 @@ export const processSyncQueue = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(400).json({
         error: 'TallyNotConfigured',
-        message: 'Tally credentials not configured for this company'
+        message: 'Tally credentials not configured'
       });
     }
 
     // Get pending items
     const queueResult = await client.query(
-      `SELECT 
-         q.*,
-         c.name as client_name,
-         c.address as current_address,
-         c.phone as current_phone,
-         c.email as current_email
+      `SELECT q.*, c.name as client_name, c.address as current_address
        FROM tally_sync_queue q
        JOIN clients c ON q.client_id = c.id
        WHERE q.company_id = $1
@@ -168,13 +155,10 @@ export const processSyncQueue = async (req, res) => {
 
     if (pendingItems.length === 0) {
       await client.query('COMMIT');
-      return res.json({
-        message: 'NoItemsToProcess',
-        processed: 0
-      });
+      return res.json({ message: 'NoItemsToProcess', processed: 0 });
     }
 
-    console.log(`\n🔄 Processing ${pendingItems.length} Tally sync items for ${company.name}`);
+    console.log(`\n🔄 Processing ${pendingItems.length} Tally sync items\n`);
 
     const results = {
       total: pendingItems.length,
@@ -187,95 +171,84 @@ export const processSyncQueue = async (req, res) => {
       // Mark as processing
       await client.query(
         `UPDATE tally_sync_queue
-         SET status = 'processing',
-             attempts = attempts + 1,
-             processed_at = NOW()
+         SET status = 'processing', attempts = attempts + 1, processed_at = NOW()
          WHERE id = $1`,
         [item.id]
       );
 
-      console.log(`\n📤 Processing: ${item.client_name} (${item.operation})`);
+      console.log(`📤 Processing: ${item.client_name} (${item.operation})`);
 
       let success = false;
       let errorMessage = null;
       let tallyResponse = null;
 
       try {
-        // Call middleware to push update to Tally
-        const middlewareResponse = await fetch(`${process.env.MIDDLEWARE_URL || 'http://localhost:5001'}/api/tally/push-update`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-middleware-token': process.env.MIDDLEWARE_TOKEN || 'tally-middleware-secret-key-12345'
-          },
-          body: JSON.stringify({
-            tallyGuid: item.tally_guid,
-            tallyCompanyName: company.tally_company_name,
-            username: company.tally_username || '',
-            password: company.tally_password_encrypted || '', // Decrypt in production
-            operation: item.operation,
-            data: item.new_data
-          }),
-          timeout: 30000
-        });
+        // ✅ FIXED: Add timeout with AbortController
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+        const middlewareResponse = await fetch(
+          `${process.env.MIDDLEWARE_URL || 'http://localhost:5001'}/api/tally/push-update`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-middleware-token': process.env.MIDDLEWARE_TOKEN || 'tally-middleware-secret-key-12345'
+            },
+            body: JSON.stringify({
+              tallyGuid: item.tally_guid,
+              tallyCompanyName: company.tally_company_name,
+              username: company.tally_username || '',
+              password: company.tally_password_encrypted || '',
+              operation: item.operation,
+              data: item.new_data
+            }),
+            signal: controller.signal
+          }
+        );
+
+        clearTimeout(timeoutId);
 
         const middlewareResult = await middlewareResponse.json();
-        
         success = middlewareResult.success;
         errorMessage = middlewareResult.error || null;
         tallyResponse = middlewareResult.tallyResponse || null;
 
-        if (success) {
-          console.log(`   ✅ Success: ${item.client_name}`);
-        } else {
-          console.log(`   ❌ Failed: ${errorMessage}`);
-        }
+        console.log(success ? `   ✅ Success` : `   ❌ Failed: ${errorMessage}`);
 
       } catch (error) {
-        errorMessage = `Middleware error: ${error.message}`;
+        if (error.name === 'AbortError') {
+          errorMessage = 'Middleware timeout after 30s';
+        } else {
+          errorMessage = `Middleware error: ${error.message}`;
+        }
         console.log(`   ❌ Error: ${errorMessage}`);
       }
 
       // Update queue item
       if (success) {
         await client.query(
-          `UPDATE tally_sync_queue
-           SET status = 'completed',
-               completed_at = NOW()
-           WHERE id = $1`,
+          `UPDATE tally_sync_queue SET status = 'completed', completed_at = NOW() WHERE id = $1`,
           [item.id]
         );
 
-        // Update client sync status
         await client.query(
-          `UPDATE clients
-           SET tally_sync_status = 'synced',
-               tally_sync_pending_fields = '{}',
-               last_tally_sync_at = NOW(),
-               tally_sync_error = NULL
-           WHERE id = $1`,
+          `UPDATE clients SET tally_sync_status = 'synced', tally_sync_pending_fields = '{}',
+           last_tally_sync_at = NOW(), tally_sync_error = NULL WHERE id = $1`,
           [item.client_id]
         );
 
         results.successful++;
-
       } else {
         const newStatus = item.attempts >= item.max_attempts ? 'failed' : 'pending';
 
         await client.query(
-          `UPDATE tally_sync_queue
-           SET status = $2,
-               last_error = $3
-           WHERE id = $1`,
+          `UPDATE tally_sync_queue SET status = $2, last_error = $3 WHERE id = $1`,
           [item.id, newStatus, errorMessage]
         );
 
-        // Update client error
         await client.query(
-          `UPDATE clients
-           SET tally_sync_status = $2,
-               tally_sync_error = $3
-           WHERE id = $1`,
+          `UPDATE clients SET tally_sync_status = $2, tally_sync_error = $3 WHERE id = $1`,
           [item.client_id, newStatus, errorMessage]
         );
 
@@ -284,32 +257,12 @@ export const processSyncQueue = async (req, res) => {
 
       // Log to history
       await client.query(
-        `INSERT INTO tally_sync_history (
-           queue_id,
-           client_id,
-           tally_guid,
-           operation,
-           old_data,
-           new_data,
-           status,
-           error_message,
-           tally_response,
-           user_id,
-           company_id
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [
-          item.id,
-          item.client_id,
-          item.tally_guid,
-          item.operation,
-          item.old_data,
-          item.new_data,
-          success ? 'success' : 'failed',
-          errorMessage,
-          tallyResponse,
-          item.user_id,
-          req.companyId
-        ]
+        `INSERT INTO tally_sync_history (queue_id, client_id, tally_guid, operation,
+         old_data, new_data, status, error_message, tally_response, user_id, company_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [item.id, item.client_id, item.tally_guid, item.operation, item.old_data,
+         item.new_data, success ? 'success' : 'failed', errorMessage, tallyResponse,
+         item.user_id, req.companyId]
       );
 
       results.items.push({
@@ -341,17 +294,11 @@ export const processSyncQueue = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('❌ Sync processing error:', error);
-    
-    res.status(500).json({
-      error: 'ProcessingFailed',
-      message: error.message
-    });
-
+    res.status(500).json({ error: 'ProcessingFailed', message: error.message });
   } finally {
     client.release();
   }
 };
-
 /**
  * Retry failed sync items
  * POST /api/tally-sync/retry/:queueId
@@ -672,5 +619,173 @@ export const getTallyConfiguration = async (req, res) => {
       error: 'FetchConfigFailed',
       message: error.message
     });
+  }
+};
+
+
+/**
+ * Get pending sync items for middleware to process
+ * GET /api/tally-sync/pending-for-middleware
+ * 
+ * Middleware polls this endpoint to fetch items it needs to push to Tally
+ */
+export const getPendingForMiddleware = async (req, res) => {
+  const { companyId } = req.query; // Middleware sends company ID
+  const { limit = 20 } = req.query;
+
+  if (!companyId) {
+    return res.status(400).json({ error: 'CompanyIdRequired' });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT 
+         q.id,
+         q.client_id,
+         q.tally_guid,
+         q.operation,
+         q.new_data,
+         q.attempts,
+         c.name as client_name,
+         comp.tally_company_name,
+         comp.tally_username,
+         comp.tally_password_encrypted
+       FROM tally_sync_queue q
+       JOIN clients c ON q.client_id = c.id
+       JOIN companies comp ON q.company_id = comp.id
+       WHERE q.company_id = $1
+       AND q.status = 'pending'
+       AND q.attempts < q.max_attempts
+       ORDER BY q.priority ASC, q.created_at ASC
+       LIMIT $2`,
+      [companyId, limit]
+    );
+
+    console.log(`📋 Middleware polling: ${result.rows.length} pending items for company ${companyId}`);
+
+    res.json({
+      success: true,
+      items: result.rows,
+      count: result.rows.length
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching pending items:', error);
+    res.status(500).json({
+      error: 'FetchFailed',
+      message: error.message
+    });
+  }
+};
+
+/**
+ * Mark sync item as completed by middleware
+ * POST /api/tally-sync/complete-from-middleware/:queueId
+ */
+export const completeFromMiddleware = async (req, res) => {
+  const { queueId } = req.params;
+  const { success, error, tallyResponse } = req.body;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    if (success) {
+      // Mark as completed
+      await client.query(
+        `UPDATE tally_sync_queue
+         SET status = 'completed',
+             completed_at = NOW()
+         WHERE id = $1`,
+        [queueId]
+      );
+
+      // Update client status
+      const queueItem = await client.query(
+        'SELECT client_id FROM tally_sync_queue WHERE id = $1',
+        [queueId]
+      );
+
+      if (queueItem.rows.length > 0) {
+        await client.query(
+          `UPDATE clients
+           SET tally_sync_status = 'synced',
+               tally_sync_pending_fields = '{}',
+               last_tally_sync_at = NOW(),
+               tally_sync_error = NULL
+           WHERE id = $1`,
+          [queueItem.rows[0].client_id]
+        );
+      }
+
+      console.log(`✅ Queue item ${queueId} marked as completed by middleware`);
+
+    } else {
+      // Mark as failed or retry
+      const queueItem = await client.query(
+        `UPDATE tally_sync_queue
+         SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
+             attempts = attempts + 1,
+             last_error = $2,
+             processed_at = NOW()
+         WHERE id = $1
+         RETURNING client_id, attempts, max_attempts`,
+        [queueId, error]
+      );
+
+      if (queueItem.rows.length > 0) {
+        const item = queueItem.rows[0];
+        const newStatus = item.attempts >= item.max_attempts ? 'failed' : 'pending';
+
+        await client.query(
+          `UPDATE clients
+           SET tally_sync_status = $2,
+               tally_sync_error = $3
+           WHERE id = $1`,
+          [item.client_id, newStatus, error]
+        );
+      }
+
+      console.log(`❌ Queue item ${queueId} failed: ${error}`);
+    }
+
+    // Log to history
+    const historyData = await client.query(
+      `SELECT client_id, tally_guid, operation, old_data, new_data, company_id
+       FROM tally_sync_queue WHERE id = $1`,
+      [queueId]
+    );
+
+    if (historyData.rows.length > 0) {
+      const h = historyData.rows[0];
+      await client.query(
+        `INSERT INTO tally_sync_history (
+           queue_id, client_id, tally_guid, operation, old_data, new_data,
+           status, error_message, tally_response, company_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          queueId, h.client_id, h.tally_guid, h.operation, h.old_data, h.new_data,
+          success ? 'success' : 'failed', error, tallyResponse, h.company_id
+        ]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: success ? 'ItemCompleted' : 'ItemFailed'
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error completing sync item:', error);
+    res.status(500).json({
+      error: 'CompletionFailed',
+      message: error.message
+    });
+  } finally {
+    client.release();
   }
 };
