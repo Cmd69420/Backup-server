@@ -12,7 +12,6 @@ export const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, async (err, decoded) => {
     if (err) {
-      // ✅ Better error messages for expired tokens
       if (err.name === 'TokenExpiredError') {
         return res.status(401).json({ 
           error: "SESSION_INVALIDATED",
@@ -25,7 +24,6 @@ export const authenticateToken = (req, res, next) => {
       });
     }
 
-    // ✅ Check if session exists and is not expired
     const result = await pool.query(
       `SELECT * FROM user_sessions WHERE token = $1 AND expires_at > NOW()`,
       [token]
@@ -67,8 +65,7 @@ export const requireAdmin = (req, res, next) => {
   next();
 };
 
-// middleware/auth.js
-
+// ✅ MIDDLEWARE TOKEN AUTHENTICATION (for Tally middleware)
 export const authenticateMiddleware = (req, res, next) => {
   const token = req.headers['x-middleware-token'];
   
@@ -80,7 +77,7 @@ export const authenticateMiddleware = (req, res, next) => {
     });
   }
 
-  const expectedToken = process.env.MIDDLEWARE_TOKEN;
+  const expectedToken = process.env.MIDDLEWARE_TOKEN || MIDDLEWARE_TOKEN;
   
   if (!expectedToken) {
     console.log('❌ MIDDLEWARE_TOKEN not configured in environment');

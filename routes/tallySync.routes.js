@@ -29,16 +29,6 @@ router.get("/queue",
   asyncHandler(tallySyncController.getSyncQueue)
 );
 
-// ... rest of your routesrouter.use(authenticateToken, attachCompanyContext);
-
-// ============================================
-// QUEUE MANAGEMENT
-// ============================================
-router.get("/queue", 
-  requireAdmin,
-  asyncHandler(tallySyncController.getSyncQueue)
-);
-
 router.get("/stats", 
   requireAdmin,
   asyncHandler(tallySyncController.getSyncStats)
