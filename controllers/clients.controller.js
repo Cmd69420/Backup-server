@@ -555,9 +555,15 @@ export const updateClientAddress = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    // Verify client exists and belongs to user's company
+    // ✅ SET current user ID for trigger
+    await client.query(
+      `SELECT set_config('app.current_user_id', $1, true)`,
+      [req.user.id]
+    );
+
+    // Verify client exists
     const existingClient = await client.query(
-      `SELECT id, name, address, latitude, longitude, pincode 
+      `SELECT id, name, address, latitude, longitude, pincode, tally_guid 
        FROM clients 
        WHERE id = $1 AND company_id = $2`,
       [id, req.companyId]
@@ -565,10 +571,7 @@ export const updateClientAddress = async (req, res) => {
 
     if (existingClient.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({
-        error: "ClientNotFound",
-        message: "Client not found"
-      });
+      return res.status(404).json({ error: "ClientNotFound" });
     }
 
     const oldClient = existingClient.rows[0];
@@ -587,10 +590,8 @@ export const updateClientAddress = async (req, res) => {
     }
 
     console.log(`📍 Updating address for client ${id}: ${oldClient.name}`);
-    console.log(`   Old: ${oldClient.address}`);
-    console.log(`   New: ${newAddress}`);
 
-    // Try to geocode the new address
+    // Geocode new address
     let latitude = null;
     let longitude = null;
     let pincode = null;
@@ -604,20 +605,13 @@ export const updateClientAddress = async (req, res) => {
         longitude = geocodeResult.longitude;
         pincode = geocodeResult.pincode;
         geocodeSuccess = true;
-        
         console.log(`   ✅ Geocoded: ${latitude}, ${longitude}`);
-        if (pincode) {
-          console.log(`   📮 Pincode extracted: ${pincode}`);
-        }
-      } else {
-        console.log(`   ⚠️ Geocoding failed, updating address without coordinates`);
       }
     } catch (geocodeError) {
       console.error(`   ❌ Geocoding error:`, geocodeError.message);
-      // Continue without coordinates
     }
 
-    // Update client with new address and coordinates (if available)
+    // ✅ UPDATE: The trigger will automatically queue Tally sync
     const updateResult = await client.query(
       `UPDATE clients 
        SET address = $1,
@@ -626,26 +620,31 @@ export const updateClientAddress = async (req, res) => {
            pincode = COALESCE($4, pincode),
            updated_at = NOW()
        WHERE id = $5
-       RETURNING ${CLIENT_SELECT_FIELDS}`,
+       RETURNING id, name, address, latitude, longitude, pincode, 
+                 tally_sync_status, tally_guid, created_by, created_at, 
+                 updated_at, status, notes, last_visit_date, last_visit_type`,
       [newAddress, latitude, longitude, pincode, id]
     );
 
     await client.query('COMMIT');
 
     const updatedClient = updateResult.rows[0];
-    
-    // Add hasLocation field for Android
     updatedClient.hasLocation = !!(updatedClient.latitude && updatedClient.longitude);
 
+    // Check if Tally sync was queued
+    const tallySyncPending = updatedClient.tally_sync_status === 'pending';
+
     console.log(`✅ Address updated for ${updatedClient.name}`);
-    console.log(`   Geocoded: ${geocodeSuccess ? '✓' : '✗'}`);
-    console.log(`   Coordinates: ${updatedClient.hasLocation ? '✓' : '✗'}`);
+    if (tallySyncPending) {
+      console.log(`   📋 Queued for Tally sync`);
+    }
 
     res.json({
       message: "AddressUpdated",
       client: updatedClient,
       geocoded: geocodeSuccess,
-      coordinatesAvailable: updatedClient.hasLocation
+      coordinatesAvailable: updatedClient.hasLocation,
+      tallySyncPending // ✅ NEW: Tell frontend if Tally sync is pending
     });
 
   } catch (err) {
@@ -654,15 +653,13 @@ export const updateClientAddress = async (req, res) => {
     
     res.status(500).json({ 
       error: "ServerError", 
-      message: "Failed to update address",
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      message: "Failed to update address"
     });
 
   } finally {
     client.release();
   }
 };
-
 
 
 // ============================================

@@ -19,6 +19,7 @@ import meetingRoutes from "./routes/meetings.routes.js";
 import expenseRoutes from "./routes/expenses.routes.js";
 import adminRoutes from "./routes/admin.routes.js";
 import syncRoutes from "./routes/sync.routes.js";
+import tallySyncRoutes from './routes/tallySync.routes.js';
 import servicesRoutes from './routes/services.routes.js';
 import manualClientRoutes from './routes/manualClient.routes.js';
 import companyRoutes from './routes/company.routes.js';
@@ -144,6 +145,7 @@ app.use("/super-admin/companies", companyRoutes);
 // SYNC ROUTES
 // ============================================
 app.use("/api/sync", syncRoutes);
+app.use("/api/tally-sync", tallySyncRoutes);
 
 // ============================================
 // HEALTH CHECK
