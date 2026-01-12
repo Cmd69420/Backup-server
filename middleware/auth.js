@@ -67,17 +67,38 @@ export const requireAdmin = (req, res, next) => {
   next();
 };
 
+// middleware/auth.js
+
 export const authenticateMiddleware = (req, res, next) => {
-  const token = req.headers["x-middleware-token"];
-
+  const token = req.headers['x-middleware-token'];
+  
   if (!token) {
-    return res.status(401).json({ error: "MiddlewareTokenRequired" });
+    console.log('❌ No middleware token provided');
+    return res.status(401).json({ 
+      error: 'Unauthorized',
+      message: 'Middleware token required' 
+    });
   }
 
-  if (token !== MIDDLEWARE_TOKEN) {
-    return res.status(403).json({ error: "InvalidMiddlewareToken" });
+  const expectedToken = process.env.MIDDLEWARE_TOKEN;
+  
+  if (!expectedToken) {
+    console.log('❌ MIDDLEWARE_TOKEN not configured in environment');
+    return res.status(500).json({ 
+      error: 'ServerError',
+      message: 'Middleware authentication not configured' 
+    });
   }
 
+  if (token !== expectedToken) {
+    console.log(`❌ Invalid middleware token: ${token.substring(0, 10)}...`);
+    return res.status(401).json({ 
+      error: 'Unauthorized',
+      message: 'Invalid middleware token' 
+    });
+  }
+
+  console.log('✅ Middleware authenticated');
   next();
 };
 

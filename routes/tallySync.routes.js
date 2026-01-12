@@ -1,28 +1,35 @@
-// routes/tallySync.routes.js
 import express from "express";
-import { authenticateToken, requireAdmin } from "../middleware/auth.js";
+import { authenticateToken, requireAdmin, authenticateMiddleware } from "../middleware/auth.js";
 import { attachCompanyContext } from "../middleware/company.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import * as tallySyncController from "../controllers/tallySync.controller.js";
 
 const router = express.Router();
 
-
 // ============================================
 // MIDDLEWARE POLLING ENDPOINTS (No user auth, uses middleware token)
 // ============================================
 router.get("/pending-for-middleware",
-  authenticateMiddleware, // ← Uses middleware token, not user JWT
+  authenticateMiddleware, // ✅ Uses middleware token only
   asyncHandler(tallySyncController.getPendingForMiddleware)
 );
 
 router.post("/complete-from-middleware/:queueId",
-  authenticateMiddleware,
+  authenticateMiddleware, // ✅ Uses middleware token only
   asyncHandler(tallySyncController.completeFromMiddleware)
 );
 
-// All routes require authentication + company context
-router.use(authenticateToken, attachCompanyContext);
+// ============================================
+// USER-AUTHENTICATED ROUTES (require JWT + company context)
+// ============================================
+router.use(authenticateToken, attachCompanyContext); // ← Apply to routes BELOW
+
+router.get("/queue", 
+  requireAdmin,
+  asyncHandler(tallySyncController.getSyncQueue)
+);
+
+// ... rest of your routesrouter.use(authenticateToken, attachCompanyContext);
 
 // ============================================
 // QUEUE MANAGEMENT

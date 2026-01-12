@@ -630,10 +630,15 @@ export const getTallyConfiguration = async (req, res) => {
  * Middleware polls this endpoint to fetch items it needs to push to Tally
  */
 export const getPendingForMiddleware = async (req, res) => {
-  const { companyId } = req.query; // Middleware sends company ID
+  const { companyId } = req.query;
   const { limit = 20 } = req.query;
 
+  console.log(`\n📋 Middleware polling request:`);
+  console.log(`   Company ID: ${companyId}`);
+  console.log(`   Headers:`, req.headers);
+
   if (!companyId) {
+    console.log(`   ❌ Missing companyId`);
     return res.status(400).json({ error: 'CompanyIdRequired' });
   }
 
@@ -661,7 +666,7 @@ export const getPendingForMiddleware = async (req, res) => {
       [companyId, limit]
     );
 
-    console.log(`📋 Middleware polling: ${result.rows.length} pending items for company ${companyId}`);
+    console.log(`   ✅ Found ${result.rows.length} pending items`);
 
     res.json({
       success: true,
@@ -670,7 +675,7 @@ export const getPendingForMiddleware = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Error fetching pending items:', error);
+    console.error('   ❌ Error fetching pending items:', error);
     res.status(500).json({
       error: 'FetchFailed',
       message: error.message
