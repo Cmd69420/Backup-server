@@ -1,34 +1,31 @@
 // routes/clients.routes.js
-// FINAL VERSION: With plan limitations + trial user restrictions
-
 import express from "express";
 import multer from "multer";
 import { authenticateToken } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
 import { 
-  checkClientCreationLimit, 
   validateImportBatchSize,
   requireFeature
 } from "../middleware/featureAuth.js";
+import { attachCompanyContext } from "../middleware/company.js";
 import { 
   blockTrialUserWrites, 
   enforceTrialUserLimits 
-} from "../middleware/trialUser.js";  // ← NEW IMPORT
+} from "../middleware/trialUser.js";
 import * as clientsController from "../controllers/clients.controller.js";
 import { checkClientQuotaMiddleware } from "../middleware/quotaCheck.js";
-
-
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// ✅ Apply authentication and company context to ALL routes
+router.use(authenticateToken, attachCompanyContext);
+
 // ============================================
 // EXCEL IMPORT
 // ============================================
-// Blocked for trial users
 router.post("/upload-excel", 
-  authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   upload.single("file"),
   validateImportBatchSize,
   asyncHandler(clientsController.uploadExcel)
@@ -37,72 +34,59 @@ router.post("/upload-excel",
 // ============================================
 // CREATE CLIENT
 // ============================================
-// Blocked for trial users
 router.post("/", 
-  authenticateToken,
   blockTrialUserWrites,
-  checkClientQuotaMiddleware,  // ← ADD THIS LINE
+  checkClientQuotaMiddleware,
   asyncHandler(clientsController.createClient)
 );
 
 // ============================================
 // GET CLIENTS
 // ============================================
-// Allow trial users but with read limits
 router.get("/", 
-  authenticateToken,
-  enforceTrialUserLimits,  // ← NEW: Allow trial users with limits
+  enforceTrialUserLimits,
   asyncHandler(clientsController.getClients)
 );
 
-
-
+// ============================================
+// UPDATE CLIENT ADDRESS
+// ============================================
 router.patch("/:id/address", 
-  authenticateToken,
-  blockTrialUserWrites,  // Trial users can't edit
+  blockTrialUserWrites,
   asyncHandler(clientsController.updateClientAddress)
 );
 
 // ============================================
 // GET SINGLE CLIENT
 // ============================================
-// Allow trial users
 router.get("/:id", 
-  authenticateToken,
-  enforceTrialUserLimits,  // ← NEW: Allow trial users
+  enforceTrialUserLimits,
   asyncHandler(clientsController.getClientById)
 );
 
 // ============================================
 // UPDATE CLIENT
 // ============================================
-// Blocked for trial users
 router.put("/:id", 
-  authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(clientsController.updateClient)
 );
 
 // ============================================
 // DELETE CLIENT
 // ============================================
-// Blocked for trial users
 router.delete("/:id", 
-  authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(clientsController.deleteClient)
 );
 
 // ============================================
 // ADVANCED SEARCH (Feature-Gated)
 // ============================================
-// Requires Professional+ plan, allow trial users with limits
 router.get("/search/advanced",
-  authenticateToken,
   requireFeature('advancedSearch'),
-  enforceTrialUserLimits,  // ← NEW: Allow trial users
+  enforceTrialUserLimits,
   asyncHandler(async (req, res) => {
-    // TODO: Implement advanced search
     res.json({ 
       message: "Advanced search endpoint",
       filters: req.query 
@@ -113,13 +97,10 @@ router.get("/search/advanced",
 // ============================================
 // BULK OPERATIONS (Feature-Gated)
 // ============================================
-// Requires Business+ plan, blocked for trial users
 router.post("/bulk/update",
-  authenticateToken,
   requireFeature('bulkOperations'),
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(async (req, res) => {
-    // TODO: Implement bulk update
     res.json({ 
       message: "Bulk update endpoint",
       affectedClients: req.body.clientIds?.length || 0
@@ -128,11 +109,9 @@ router.post("/bulk/update",
 );
 
 router.post("/bulk/delete",
-  authenticateToken,
   requireFeature('bulkOperations'),
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(async (req, res) => {
-    // TODO: Implement bulk delete
     res.json({ 
       message: "Bulk delete endpoint",
       affectedClients: req.body.clientIds?.length || 0

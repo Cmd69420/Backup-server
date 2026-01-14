@@ -79,6 +79,9 @@ export const incrementUserCount = async (companyId, transaction = null) => {
     [companyId]
   );
 
+  //increment lms count api
+
+  
   console.log(`📊 User count incremented for company ${companyId}: ${result.rows[0].current_users}`);
   return result.rows[0].current_users;
 };

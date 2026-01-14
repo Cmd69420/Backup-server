@@ -324,18 +324,22 @@ export const getClients = async (req, res) => {
 
   console.log(`👤 Fetching clients for user: ${req.user.id} | Company: ${req.companyId} | Mode: ${searchMode}`);
 
+  // ============================================
+  // REMOTE SEARCH MODE
+  // ============================================
   if (searchMode === 'remote') {
     console.log(`🌐 Remote search mode`);
 
+    // ✅ FIXED: Only filter by company_id (show ALL company clients)
     let query = `
       SELECT ${CLIENT_SELECT_FIELDS}
       FROM clients
       WHERE company_id = $1
-      AND (created_by IS NULL OR created_by = $2)
     `;
-    const params = [req.companyId, req.user.id];
-    let paramCount = 2;
+    const params = [req.companyId];
+    let paramCount = 1;
 
+    // Search filter
     if (search && search.trim()) {
       paramCount++;
       
@@ -344,7 +348,7 @@ export const getClients = async (req, res) => {
         query += ` AND pincode = $${paramCount}`;
         params.push(search.trim());
       } else {
-        console.log(`📝 Detected text search: ${search}`);
+        console.log(`🔍 Detected text search: ${search}`);
         query += ` AND (
           name ILIKE $${paramCount} OR 
           address ILIKE $${paramCount} OR
@@ -355,12 +359,14 @@ export const getClients = async (req, res) => {
       }
     }
 
+    // Status filter
     if (status) {
       paramCount++;
       query += ` AND status = $${paramCount}`;
       params.push(status);
     }
 
+    // Order and pagination
     query += `
       ORDER BY 
         last_visit_date DESC NULLS LAST,
@@ -372,9 +378,10 @@ export const getClients = async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    let countQuery = "SELECT COUNT(*) FROM clients WHERE company_id = $1 AND (created_by IS NULL OR created_by = $2)";
-    const countParams = [req.companyId, req.user.id];
-    let countParamIndex = 2;
+    // ✅ FIXED: Count query (only company_id filter)
+    let countQuery = "SELECT COUNT(*) FROM clients WHERE company_id = $1";
+    const countParams = [req.companyId];
+    let countParamIndex = 1;
 
     if (search && search.trim()) {
       countParamIndex++;
@@ -401,7 +408,7 @@ export const getClients = async (req, res) => {
     const countResult = await pool.query(countQuery, countParams);
     const total = parseInt(countResult.rows[0].count);
 
-    console.log(`✅ Remote search found ${result.rows.length} clients`);
+    console.log(`✅ Remote search found ${result.rows.length} clients (Total: ${total})`);
 
     return res.json({
       clients: result.rows,
@@ -418,7 +425,9 @@ export const getClients = async (req, res) => {
     });
   }
 
+  // ============================================
   // LOCAL MODE
+  // ============================================
   const userPincode = (await pool.query("SELECT pincode FROM users WHERE id = $1", [req.user.id])).rows[0]?.pincode;
   
   if (!userPincode) {
@@ -430,15 +439,15 @@ export const getClients = async (req, res) => {
 
   console.log(`📍 Local search mode - filtering by pincode: ${userPincode}`);
 
+  // ✅ FIXED: Only filter by pincode and company_id
   let query = `
     SELECT ${CLIENT_SELECT_FIELDS}
     FROM clients
     WHERE pincode = $1
     AND company_id = $2
-    AND (created_by IS NULL OR created_by = $3)
   `;
-  const params = [userPincode, req.companyId, req.user.id];
-  let paramCount = 3;
+  const params = [userPincode, req.companyId];
+  let paramCount = 2;
 
   if (status) {
     paramCount++;
@@ -457,9 +466,10 @@ export const getClients = async (req, res) => {
 
   const result = await pool.query(query, params);
 
-  let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND company_id = $2 AND (created_by IS NULL OR created_by = $3)";
-  const countParams = [userPincode, req.companyId, req.user.id];
-  let countParamIndex = 3;
+  // ✅ FIXED: Count query
+  let countQuery = "SELECT COUNT(*) FROM clients WHERE pincode = $1 AND company_id = $2";
+  const countParams = [userPincode, req.companyId];
+  let countParamIndex = 2;
 
   if (status) {
     countParamIndex++;
@@ -476,7 +486,7 @@ export const getClients = async (req, res) => {
   const countResult = await pool.query(countQuery, countParams);
   const total = parseInt(countResult.rows[0].count);
 
-  console.log(`✅ Local search found ${result.rows.length} clients in pincode ${userPincode}`);
+  console.log(`✅ Local search found ${result.rows.length} clients in pincode ${userPincode} (Total: ${total})`);
 
   res.json({
     clients: result.rows,
