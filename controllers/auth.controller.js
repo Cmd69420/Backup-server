@@ -6,6 +6,7 @@ import { pool } from "../db.js";
 import * as tokenService from "../services/token.service.js";
 import * as trialService from "../services/trial.service.js";
 import * as emailDomainService from "../services/emailDomain.service.js";  // ← NEW
+import { TRIAL_COMPANY_ID } from "../config/constants.js";
 
 export const login = async (req, res) => {
   const { email, password, deviceId } = req.body;
@@ -165,6 +166,13 @@ export const signup = async (req, res) => {
 
   const hashedPassword = await bcrypt.hash(password, 10);
 
+  const companyId = company
+  ? company.id
+  : isTrialUser
+    ? TRIAL_COMPANY_ID
+    : null;
+
+
   // Create user with appropriate settings
   const userResult = await pool.query(
     `INSERT INTO users (email, password, is_admin, is_trial_user, company_id)
@@ -175,7 +183,8 @@ export const signup = async (req, res) => {
       hashedPassword, 
       false,                          // Not admin by default
       isTrialUser,                    // ← NEW: Mark as trial if generic email
-      company?.id || null             // ← NEW: Auto-assign company if found
+      companyId
+             // ← NEW: Auto-assign company if found
     ]
   );
 

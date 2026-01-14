@@ -19,3 +19,5 @@ export const EMAIL_CONFIG = {
   pass: process.env.EMAIL_PASSWORD || 'your-app-password-here',
   from: process.env.EMAIL_FROM || 'GeoTrack <your-app-email@gmail.com>'
 };
+
+export const TRIAL_COMPANY_ID = "00000000-0000-0000-0000-000000000999";
