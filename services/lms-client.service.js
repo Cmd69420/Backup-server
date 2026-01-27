@@ -3,7 +3,7 @@
 
 import { pool } from "../db.js";
 
-const LMS_BASE_URL = process.env.LMS_API_URL || 'https://license-system.onrender.com';
+const LMS_BASE_URL = process.env.LMS_API_URL || 'localhost:4000';
 const LMS_API_KEY = process.env.LMS_API_KEY || 'my-secret-key-123';
 
 /**
