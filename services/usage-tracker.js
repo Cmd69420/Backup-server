@@ -1,7 +1,17 @@
 // services/usage-tracker.js
 // Real-time quota tracking with atomic counter operations
+// ✅ UPDATED: Now syncs with License Management System (LMS)
 
 import { pool } from "../db.js";
+import {
+  incrementLMSUserCount,
+  decrementLMSUserCount,
+  incrementLMSClientCount,
+  decrementLMSClientCount,
+  incrementLMSServiceCount,
+  decrementLMSServiceCount,
+  incrementLMSStorageUsed
+} from "./lms-client.service.js";
 
 /**
  * Get current usage stats for a company
@@ -67,6 +77,7 @@ export const checkUserQuota = async (companyId) => {
   };
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed - LMS uses license owner
 export const incrementUserCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -79,13 +90,17 @@ export const incrementUserCount = async (companyId, transaction = null) => {
     [companyId]
   );
 
-  //increment lms count api
-
-  
   console.log(`📊 User count incremented for company ${companyId}: ${result.rows[0].current_users}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  incrementLMSUserCount(companyId).catch(err => {
+    console.error('⚠️ LMS user increment failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_users;
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const decrementUserCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -99,6 +114,12 @@ export const decrementUserCount = async (companyId, transaction = null) => {
   );
 
   console.log(`📊 User count decremented for company ${companyId}: ${result.rows[0].current_users}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  decrementLMSUserCount(companyId).catch(err => {
+    console.error('⚠️ LMS user decrement failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_users;
 };
 
@@ -132,6 +153,7 @@ export const checkClientQuota = async (companyId) => {
   };
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const incrementClientCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -145,9 +167,16 @@ export const incrementClientCount = async (companyId, transaction = null) => {
   );
 
   console.log(`📊 Client count incremented for company ${companyId}: ${result.rows[0].current_clients}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  incrementLMSClientCount(companyId).catch(err => {
+    console.error('⚠️ LMS client increment failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_clients;
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const decrementClientCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -161,6 +190,12 @@ export const decrementClientCount = async (companyId, transaction = null) => {
   );
 
   console.log(`📊 Client count decremented for company ${companyId}: ${result.rows[0].current_clients}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  decrementLMSClientCount(companyId).catch(err => {
+    console.error('⚠️ LMS client decrement failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_clients;
 };
 
@@ -209,6 +244,7 @@ export const checkServiceQuota = async (companyId, clientId) => {
   };
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const incrementServiceCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -222,9 +258,16 @@ export const incrementServiceCount = async (companyId, transaction = null) => {
   );
 
   console.log(`📊 Service count incremented for company ${companyId}: ${result.rows[0].current_active_services}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  incrementLMSServiceCount(companyId).catch(err => {
+    console.error('⚠️ LMS service increment failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_active_services;
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const decrementServiceCount = async (companyId, transaction = null) => {
   const client = transaction || pool;
   
@@ -238,6 +281,12 @@ export const decrementServiceCount = async (companyId, transaction = null) => {
   );
 
   console.log(`📊 Service count decremented for company ${companyId}: ${result.rows[0].current_active_services}`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  decrementLMSServiceCount(companyId).catch(err => {
+    console.error('⚠️ LMS service decrement failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].current_active_services;
 };
 
@@ -265,6 +314,7 @@ export const checkStorageQuota = async (companyId, additionalMB) => {
   };
 };
 
+// ✅ SIMPLIFIED: No userId parameter needed
 export const incrementStorageUsed = async (companyId, sizeMB, transaction = null) => {
   const client = transaction || pool;
   
@@ -278,6 +328,12 @@ export const incrementStorageUsed = async (companyId, sizeMB, transaction = null
   );
 
   console.log(`📊 Storage incremented for company ${companyId}: +${sizeMB}MB = ${result.rows[0].storage_used_mb}MB`);
+  
+  // ✅ Send to LMS using stored license owner ID (non-blocking)
+  incrementLMSStorageUsed(companyId, sizeMB).catch(err => {
+    console.error('⚠️ LMS storage increment failed (non-critical):', err.message);
+  });
+  
   return result.rows[0].storage_used_mb;
 };
 

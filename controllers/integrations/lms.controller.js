@@ -1,4 +1,6 @@
-// controllers/integrations/lms.controller.js - FIXED
+// controllers/integrations/lms.controller.js - UPDATED
+// Now captures and stores LMS user ID for heartbeat tracking
+
 import bcrypt from "bcryptjs";
 import { pool } from "../../db.js";
 import crypto from "crypto";
@@ -22,7 +24,8 @@ export const handleLicensePurchase = async (req, res) => {
       planType,
       maxUsers,
       expiryDate,
-      isRenewal = false
+      isRenewal = false,
+      lmsUserId  // ✅ NEW: LMS user ID who purchased the license
     } = req.body;
 
     console.log("📦 Payload received:");
@@ -35,6 +38,7 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Max Users: ${maxUsers}`);
     console.log(`   Expiry: ${expiryDate}`);
     console.log(`   Is Renewal: ${isRenewal}`);
+    console.log(`   LMS User ID: ${lmsUserId || 'NOT PROVIDED'}`);  // ✅ NEW
     console.log(`   Password provided: ${password ? 'Yes' : 'No'}`);
 
     // Validate required fields
@@ -46,11 +50,10 @@ export const handleLicensePurchase = async (req, res) => {
       });
     }
 
-    // ✅ NEW: Extract email domain from admin email
+    // Extract email domain from admin email
     let emailDomain = null;
     try {
       const extractedDomain = extractDomain(email);
-      // Only set if not a generic domain (gmail, yahoo, etc.)
       if (!isGenericEmailDomain(email)) {
         emailDomain = extractedDomain;
         console.log(`   📧 Email domain extracted: ${emailDomain}`);
@@ -77,7 +80,6 @@ export const handleLicensePurchase = async (req, res) => {
       company = existingCompany.rows[0];
       console.log(`\n🔄 Existing company found: ${company.name} (${company.id})`);
       
-      // ✅ NEW: Update email_domain if not already set
       if (!company.email_domain && emailDomain) {
         await client.query(
           `UPDATE companies
@@ -101,7 +103,6 @@ export const handleLicensePurchase = async (req, res) => {
       isNewCompany = true;
       console.log(`\n✨ Creating new company: ${companyName}`);
       
-      // ✅ NEW: Include email_domain in INSERT
       const companyResult = await client.query(
         `INSERT INTO companies (name, subdomain, email_domain, is_active)
          VALUES ($1, $2, $3, true)
@@ -116,32 +117,36 @@ export const handleLicensePurchase = async (req, res) => {
       }
     }
 
-    // Upsert license
+    // ✅ UPDATED: Upsert license WITH lms_user_id
     console.log("\n🎫 Upserting license record...");
 
     const licenseResult = await client.query(
-      `INSERT INTO company_licenses (company_id, license_key, plan, max_users, expires_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO company_licenses (company_id, license_key, plan, max_users, expires_at, lms_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (company_id) 
        DO UPDATE SET 
          license_key = EXCLUDED.license_key,
          plan = EXCLUDED.plan,
          max_users = EXCLUDED.max_users,
          expires_at = EXCLUDED.expires_at,
+         lms_user_id = EXCLUDED.lms_user_id,
          created_at = NOW()
-       RETURNING id, license_key, 
+       RETURNING id, license_key, lms_user_id,
          (xmax = 0) AS inserted`,
       [
         company.id,
         licenseKey,
         planType || "Standard",
         maxUsers || 1,
-        expiryDate ? new Date(expiryDate) : null
+        expiryDate ? new Date(expiryDate) : null,
+        lmsUserId || email  // ✅ Use lmsUserId if provided, otherwise fallback to email
       ]
     );
 
     const licenseOp = licenseResult.rows[0].inserted ? "created" : "updated";
+    const storedLmsUserId = licenseResult.rows[0].lms_user_id;
     console.log(`✅ License ${licenseOp}: ${licenseKey}`);
+    console.log(`   📋 LMS User ID stored: ${storedLmsUserId}`);
 
     // Handle user account
     const existingUser = await client.query(
@@ -216,7 +221,7 @@ export const handleLicensePurchase = async (req, res) => {
         id: company.id,
         name: company.name,
         subdomain: company.subdomain,
-        emailDomain: company.email_domain, // ✅ NEW
+        emailDomain: company.email_domain,
         url: `https://${company.subdomain}.yourdomain.com`
       },
       user: {
@@ -230,6 +235,7 @@ export const handleLicensePurchase = async (req, res) => {
         plan: planType,
         maxUsers: maxUsers,
         expiryDate: expiryDate,
+        lmsUserId: storedLmsUserId,  // ✅ NEW: Return stored LMS user ID
         operation: licenseOp
       }
     });
