@@ -225,54 +225,64 @@ export const getAnalytics = async (req, res) => {
 };
 
 export const getUserLocationLogs = async (req, res) => {
-  const { page = 1, limit = 200 } = req.query;
-  const offset = (page - 1) * limit;
-  const userId = req.params.userId;
+  try {
+    const { page = 1, limit = 200 } = req.query;
+    const offset = (page - 1) * limit;
+    const userId = req.params.userId;
 
-  if (!req.isSuperAdmin) {
-    const userCheck = await pool.query(
-      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
-      [userId, req.companyId]
+    // Build correct company filter
+    let companyClause = "";
+    let params = [userId];
+
+    if (!req.isSuperAdmin) {
+      companyClause = "AND company_id = $2";
+      params.push(req.companyId);
+    }
+
+    // Fetch logs
+    const logsResult = await pool.query(
+      `
+      SELECT id, latitude, longitude, accuracy, activity,
+             battery, notes, pincode, timestamp
+      FROM location_logs
+      WHERE user_id = $1
+      ${companyClause}
+      ORDER BY timestamp DESC
+      LIMIT ${limit} OFFSET ${offset}
+      `,
+      params
     );
-    
-    if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: "UserNotFound" });
-    }
+
+    // Count total logs
+    const countResult = await pool.query(
+      `
+      SELECT COUNT(*)
+      FROM location_logs
+      WHERE user_id = $1
+      ${companyClause}
+      `,
+      params
+    );
+
+    res.json({
+      logs: logsResult.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: parseInt(countResult.rows[0].count),
+        totalPages: Math.ceil(countResult.rows[0].count / limit),
+      },
+    });
+
+  } catch (err) {
+    console.error("❌ Location logs fetch failed:", err);
+    res.status(500).json({
+      error: "FailedToFetchLocationLogs",
+      message: err.message,
+    });
   }
-
-  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $3';
-  const params = [userId, limit, offset];
-  if (!req.isSuperAdmin) {
-    params.splice(2, 0, req.companyId);
-  }
-
-  const result = await pool.query(
-    `SELECT id, latitude, longitude, accuracy, activity, battery, notes, pincode, timestamp
-     FROM location_logs
-     WHERE user_id = $1
-     ${companyFilter}
-     ORDER BY timestamp DESC
-     LIMIT $2 OFFSET $${!req.isSuperAdmin ? 4 : 3}`,
-    params
-  );
-
-  const countResult = await pool.query(
-    `SELECT COUNT(*) FROM location_logs WHERE user_id = $1 ${companyFilter}`,
-    req.isSuperAdmin ? [userId] : [userId, req.companyId]
-  );
-
-  console.log(`✅ Fetched ${result.rows.length} logs for user ${userId}`);
-
-  res.json({
-    logs: result.rows,
-    pagination: {
-      page: parseInt(page),
-      limit: parseInt(limit),
-      total: parseInt(countResult.rows[0].count),
-      totalPages: Math.ceil(countResult.rows[0].count / limit),
-    }
-  });
 };
+
 
 export const getClockStatus = async (req, res) => {
   const { userId } = req.params;
