@@ -1,5 +1,5 @@
-// services/lms-client.service.js - FINAL FIX
-// ✅ Uses owner's userId in URL path: POST /api/heartbeat/:userId
+// services/lms-client.service.js - FINAL CORRECT VERSION
+// ✅ Uses lms_license_id in URL path and userId in body
 
 import { pool } from "../db.js";
 
@@ -11,7 +11,7 @@ const LMS_API_KEY = process.env.LMS_API_KEY || 'my-secret-key-123';
  */
 const getCompanyLicenseInfo = async (companyId) => {
   const result = await pool.query(
-    'SELECT license_key, lms_user_id FROM company_licenses WHERE company_id = $1',
+    'SELECT license_key, lms_license_id, lms_user_id FROM company_licenses WHERE company_id = $1',
     [companyId]
   );
   
@@ -22,16 +22,16 @@ const getCompanyLicenseInfo = async (companyId) => {
   
   return {
     licenseKey: result.rows[0].license_key,
-    lmsUserId: result.rows[0].lms_user_id  // ✅ Owner's user ID
+    lmsLicenseId: result.rows[0].lms_license_id,  // ✅ MongoDB _id for URL
+    lmsUserId: result.rows[0].lms_user_id          // ✅ Owner userId for body
   };
 };
 
 /**
  * Send heartbeat to LMS with usage updates
- * ✅ CORRECT: Uses owner's userId in URL path as required by LMS API
- * 
- * API Format: POST /api/heartbeat/:userId
- * Where userId = ownerUserId (the person who bought the license)
+ * ✅ CORRECT API FORMAT:
+ *    POST /api/heartbeat/:licenseId
+ *    Body: { userId, features }
  * 
  * @param {string} companyId - Company ID
  * @param {Array} features - Array of {slug, value} objects
@@ -45,19 +45,25 @@ export const sendLMSHeartbeat = async (companyId, features = []) => {
       return { success: false, reason: 'NO_LICENSE' };
     }
 
-    const { licenseKey, lmsUserId } = licenseInfo;
+    const { licenseKey, lmsLicenseId, lmsUserId } = licenseInfo;
 
-    // ✅ CHECK: Must have lms_user_id (owner's userId) for heartbeat
-    if (!lmsUserId) {
-      console.error(`❌ No lms_user_id found for company ${companyId}`);
+    // ✅ CHECK: Must have lms_license_id for URL path
+    if (!lmsLicenseId) {
+      console.error(`❌ No lms_license_id found for company ${companyId}`);
       console.error(`   License Key: ${licenseKey}`);
-      console.error(`   This license was created before lms_user_id was added.`);
-      console.error(`   Heartbeat sync will fail until this is fixed.`);
+      console.error(`   LMS User ID: ${lmsUserId || 'NONE'}`);
+      console.error(`   ⚠️ This license needs lms_license_id to be set!`);
+      console.error(`   Run this SQL after finding the MongoDB _id from LMS:`);
+      console.error(`   UPDATE company_licenses SET lms_license_id = 'MONGODB_ID_HERE' WHERE license_key = '${licenseKey}';`);
       return { 
         success: false, 
-        reason: 'NO_LMS_USER_ID',
+        reason: 'NO_LMS_LICENSE_ID',
         licenseKey 
       };
+    }
+
+    if (!lmsUserId) {
+      console.warn(`⚠️ No lms_user_id found, using license key as fallback`);
     }
 
     if (!LMS_API_KEY) {
@@ -66,21 +72,22 @@ export const sendLMSHeartbeat = async (companyId, features = []) => {
     }
 
     const payload = {
-      userId: lmsUserId,  // ✅ Owner's userId (same as URL path)
+      userId: lmsUserId || licenseKey,  // ✅ Owner userId in body
       features: features.map(f => ({
         slug: f.slug,
         value: f.value || 1
       }))
     };
 
-    // ✅ CORRECT: Use owner's userId in the URL path
-    // Example: POST /api/heartbeat/6978855e13c078aa8e53de74
-    const url = `${LMS_BASE_URL}/api/heartbeat/${lmsUserId}`;
+    // ✅ CORRECT: Use lms_license_id (MongoDB _id) in URL path
+    // Example: POST /api/heartbeat/6972048cf19aeec8c14bb571
+    const url = `${LMS_BASE_URL}/api/heartbeat/${lmsLicenseId}`;
     
     console.log(`📤 Sending heartbeat to LMS:`);
     console.log(`   URL: ${url}`);
     console.log(`   License Key: ${licenseKey}`);
-    console.log(`   Owner User ID: ${lmsUserId}`);
+    console.log(`   LMS License ID: ${lmsLicenseId}`);
+    console.log(`   LMS User ID: ${lmsUserId}`);
     console.log(`   Payload:`, JSON.stringify(payload, null, 2));
 
     try {
@@ -92,7 +99,7 @@ export const sendLMSHeartbeat = async (companyId, features = []) => {
           'x-api-key': LMS_API_KEY
         },
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(5000) // 5 second timeout
+        signal: AbortSignal.timeout(5000)
       });
 
       const contentType = response.headers.get('content-type');
@@ -105,11 +112,17 @@ export const sendLMSHeartbeat = async (companyId, features = []) => {
       }
 
       if (response.ok) {
-        console.log(`✅ LMS heartbeat successful for user ${lmsUserId}:`, data);
+        console.log(`✅ LMS heartbeat successful:`, data);
         return { success: true, data };
       } else {
         console.error(`❌ LMS heartbeat failed: ${response.status}`);
         console.error(`   Response:`, data);
+        
+        if (response.status === 404) {
+          console.error(`   💡 License ${lmsLicenseId} not found in LMS!`);
+          console.error(`   Verify this MongoDB _id exists in your LMS database.`);
+        }
+        
         return { success: false, status: response.status, error: data };
       }
 
@@ -125,39 +138,11 @@ export const sendLMSHeartbeat = async (companyId, features = []) => {
 };
 
 /**
- * Verify user exists in LMS (for debugging)
- */
-export const verifyUserInLMS = async (lmsUserId) => {
-  try {
-    const url = `${LMS_BASE_URL}/api/users/${lmsUserId}`;
-    
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${LMS_API_KEY}`,
-        'x-api-key': LMS_API_KEY
-      }
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      console.log(`✅ User ${lmsUserId} verified in LMS:`, data);
-      return { exists: true, data };
-    } else {
-      console.log(`⚠️ User ${lmsUserId} not found in LMS: ${response.status}`);
-      return { exists: false, status: response.status };
-    }
-  } catch (error) {
-    console.error(`❌ Error verifying user in LMS:`, error.message);
-    return { exists: false, error: error.message };
-  }
-};
-
-/**
  * Increment user count in LMS
  */
 export const incrementLMSUserCount = async (companyId) => {
   return sendLMSHeartbeat(companyId, [
-    { slug: 'users_created', value: 1 }
+    { slug: 'user-limit', value: 1 }
   ]);
 };
 
@@ -166,7 +151,7 @@ export const incrementLMSUserCount = async (companyId) => {
  */
 export const decrementLMSUserCount = async (companyId) => {
   return sendLMSHeartbeat(companyId, [
-    { slug: 'users_created', value: -1 }
+    { slug: 'user-limit', value: -1 }
   ]);
 };
 
@@ -175,7 +160,7 @@ export const decrementLMSUserCount = async (companyId) => {
  */
 export const incrementLMSClientCount = async (companyId) => {
   return sendLMSHeartbeat(companyId, [
-    { slug: 'clients_created', value: 1 }
+    { slug: 'client-record-limit', value: 1 }
   ]);
 };
 
@@ -184,7 +169,7 @@ export const incrementLMSClientCount = async (companyId) => {
  */
 export const decrementLMSClientCount = async (companyId) => {
   return sendLMSHeartbeat(companyId, [
-    { slug: 'clients_created', value: -1 }
+    { slug: 'client-record-limit', value: -1 }
   ]);
 };
 
@@ -211,7 +196,7 @@ export const decrementLMSServiceCount = async (companyId) => {
  */
 export const incrementLMSStorageUsed = async (companyId, sizeMB) => {
   return sendLMSHeartbeat(companyId, [
-    { slug: 'storage_used_mb', value: sizeMB }
+    { slug: 'storage-per-user', value: sizeMB }
   ]);
 };
 

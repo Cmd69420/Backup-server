@@ -1,5 +1,5 @@
 // controllers/integrations/lms.controller.js - UPDATED
-// Now captures and stores LMS user ID for heartbeat tracking
+// Now captures and stores BOTH lms_user_id AND lms_license_id
 
 import bcrypt from "bcryptjs";
 import { pool } from "../../db.js";
@@ -16,6 +16,7 @@ export const handleLicensePurchase = async (req, res) => {
     const {
       purchaseId,
       licenseKey,
+      lmsLicenseId,  // ✅ NEW: MongoDB _id from LMS (e.g., "6972048cf19aeec8c14bb571")
       email,
       password,
       fullName,
@@ -25,7 +26,7 @@ export const handleLicensePurchase = async (req, res) => {
       maxUsers,
       expiryDate,
       isRenewal = false,
-      lmsUserId  // ✅ NEW: LMS user ID who purchased the license
+      lmsUserId  // ✅ LMS user ID who purchased the license
     } = req.body;
 
     console.log("📦 Payload received:");
@@ -34,11 +35,12 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Company: ${companyName}`);
     console.log(`   Subdomain: ${subdomain}`);
     console.log(`   License Key: ${licenseKey}`);
+    console.log(`   LMS License ID: ${lmsLicenseId || 'NOT PROVIDED'}`);  // ✅ MongoDB _id
+    console.log(`   LMS User ID: ${lmsUserId || 'NOT PROVIDED'}`);
     console.log(`   Plan: ${planType}`);
     console.log(`   Max Users: ${maxUsers}`);
     console.log(`   Expiry: ${expiryDate}`);
     console.log(`   Is Renewal: ${isRenewal}`);
-    console.log(`   LMS User ID: ${lmsUserId || 'NOT PROVIDED'}`);  // ✅ NEW
     console.log(`   Password provided: ${password ? 'Yes' : 'No'}`);
 
     // Validate required fields
@@ -48,6 +50,14 @@ export const handleLicensePurchase = async (req, res) => {
         error: "ValidationError",
         message: "Missing required fields: email, companyName, subdomain, licenseKey"
       });
+    }
+
+    // ✅ CRITICAL: Warn if lmsLicenseId is missing
+    if (!lmsLicenseId) {
+      console.error("⚠️⚠️⚠️ CRITICAL WARNING ⚠️⚠️⚠️");
+      console.error("lmsLicenseId (MongoDB _id) not provided!");
+      console.error("Heartbeat syncing will NOT work without this!");
+      console.error("Your LMS webhook MUST send the license._id field");
     }
 
     // Extract email domain from admin email
@@ -117,25 +127,35 @@ export const handleLicensePurchase = async (req, res) => {
       }
     }
 
-    // ✅ UPDATED: Upsert license WITH lms_user_id
+    // ✅ UPDATED: Upsert license WITH lms_license_id AND lms_user_id
     console.log("\n🎫 Upserting license record...");
 
     const licenseResult = await client.query(
-      `INSERT INTO company_licenses (company_id, license_key, plan, max_users, expires_at, lms_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO company_licenses (
+         company_id, 
+         license_key, 
+         lms_license_id,
+         plan, 
+         max_users, 
+         expires_at, 
+         lms_user_id
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (company_id) 
        DO UPDATE SET 
          license_key = EXCLUDED.license_key,
+         lms_license_id = EXCLUDED.lms_license_id,
          plan = EXCLUDED.plan,
          max_users = EXCLUDED.max_users,
          expires_at = EXCLUDED.expires_at,
          lms_user_id = EXCLUDED.lms_user_id,
          created_at = NOW()
-       RETURNING id, license_key, lms_user_id,
+       RETURNING id, license_key, lms_license_id, lms_user_id,
          (xmax = 0) AS inserted`,
       [
         company.id,
         licenseKey,
+        lmsLicenseId,  // ✅ Store LMS MongoDB _id
         planType || "Standard",
         maxUsers || 1,
         expiryDate ? new Date(expiryDate) : null,
@@ -144,8 +164,11 @@ export const handleLicensePurchase = async (req, res) => {
     );
 
     const licenseOp = licenseResult.rows[0].inserted ? "created" : "updated";
+    const storedLmsLicenseId = licenseResult.rows[0].lms_license_id;
     const storedLmsUserId = licenseResult.rows[0].lms_user_id;
+    
     console.log(`✅ License ${licenseOp}: ${licenseKey}`);
+    console.log(`   📋 LMS License ID stored: ${storedLmsLicenseId || 'NONE'}`);
     console.log(`   📋 LMS User ID stored: ${storedLmsUserId}`);
 
     // Handle user account
@@ -232,10 +255,11 @@ export const handleLicensePurchase = async (req, res) => {
       },
       license: {
         key: licenseKey,
+        lmsLicenseId: storedLmsLicenseId,  // ✅ NEW
+        lmsUserId: storedLmsUserId,
         plan: planType,
         maxUsers: maxUsers,
         expiryDate: expiryDate,
-        lmsUserId: storedLmsUserId,  // ✅ NEW: Return stored LMS user ID
         operation: licenseOp
       }
     });
@@ -270,4 +294,4 @@ export const handleLicensePurchase = async (req, res) => {
   } finally {
     client.release();
   }
-}
+};
