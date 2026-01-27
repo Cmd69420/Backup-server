@@ -11,7 +11,8 @@ import {
   upgradeCompanyPlan,
   checkUserLimit,
   checkClientLimit,
-  getCompanyUsage
+  getCompanyUsage,
+  purchaseSlots
 } from "../services/plan.service.js";
 import { getCompanyUsageStats } from "../services/usage-tracker.js";
 
@@ -256,6 +257,20 @@ router.get(
       }
     });
   })
+);
+
+
+
+
+// ============================================
+// PURCHASE ADDITIONAL SLOTS
+// ============================================
+router.post(
+  "/purchase-slots",
+  authenticateToken,
+  attachCompanyContext,
+  requireAdmin,
+  asyncHandler(purchaseSlots)
 );
 
 // ============================================

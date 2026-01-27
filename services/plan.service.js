@@ -353,6 +353,208 @@ export const upgradeCompanyPlan = async (companyId, newPlan) => {
 
 
 /**
+ * Purchase additional user/client slots
+ * POST /api/plans/purchase-slots
+ */
+export const purchaseSlots = async (req, res) => {
+  const { additionalUsers = 0, additionalClients = 0, totalAmount } = req.body;
+
+  /* ---------------------------
+     1. Validation
+  ---------------------------- */
+
+  if (additionalUsers === 0 && additionalClients === 0) {
+    return res.status(400).json({
+      error: "ValidationError",
+      message: "At least one slot type must be specified",
+    });
+  }
+
+  if (additionalUsers < 0 || additionalClients < 0) {
+    return res.status(400).json({
+      error: "ValidationError",
+      message: "Slot quantities cannot be negative",
+    });
+  }
+
+  if (!totalAmount || totalAmount <= 0) {
+    return res.status(400).json({
+      error: "ValidationError",
+      message: "Total amount must be provided and greater than zero",
+    });
+  }
+
+  // Super admin cannot purchase slots (unlimited)
+  if (req.isSuperAdmin && !req.companyId) {
+    return res.status(400).json({
+      error: "NoCompanyContext",
+      message: "Super admins cannot purchase slots",
+    });
+  }
+
+  const dbClient = await pool.connect();
+
+  try {
+    await dbClient.query("BEGIN");
+
+    /* ---------------------------
+       2. Fetch License + Plan Limits
+       (Aliased properly)
+    ---------------------------- */
+
+    const licenseResult = await dbClient.query(
+      `
+      SELECT 
+        cl.plan,
+
+        cl.max_users   AS license_max_users,
+        cl.max_clients AS license_max_clients,
+
+        pf.max_users   AS plan_max_users,
+        pf.max_clients AS plan_max_clients
+
+      FROM company_licenses cl
+      LEFT JOIN plan_features pf 
+        ON pf.plan_name = cl.plan
+
+      WHERE cl.company_id = $1
+      `,
+      [req.companyId]
+    );
+
+    if (licenseResult.rows.length === 0) {
+      await dbClient.query("ROLLBACK");
+      return res.status(404).json({
+        error: "LicenseNotFound",
+        message: "No active license found for your company",
+      });
+    }
+
+    const license = licenseResult.rows[0];
+
+    /* ---------------------------
+       3. Resolve Current Limits
+       License override > Plan default
+    ---------------------------- */
+
+    const currentMaxUsers =
+      license.license_max_users ?? license.plan_max_users;
+
+    const currentMaxClients =
+      license.license_max_clients ?? license.plan_max_clients;
+
+    /* ---------------------------
+       4. Calculate New Limits
+       NULL means unlimited
+    ---------------------------- */
+
+    const newMaxUsers =
+      currentMaxUsers === null
+        ? null
+        : currentMaxUsers + additionalUsers;
+
+    const newMaxClients =
+      currentMaxClients === null
+        ? null
+        : currentMaxClients + additionalClients;
+
+    /* ---------------------------
+       5. Update License Overrides
+    ---------------------------- */
+
+    await dbClient.query(
+      `
+      UPDATE company_licenses
+      SET max_users = $1,
+          max_clients = $2
+      WHERE company_id = $3
+      `,
+      [newMaxUsers, newMaxClients, req.companyId]
+    );
+
+    /* ---------------------------
+       6. Record Billing Transaction
+    ---------------------------- */
+
+    await dbClient.query(
+      `
+      INSERT INTO billing_transactions
+        (company_id, transaction_type, amount, currency, payment_status, metadata)
+      VALUES
+        ($1, $2, $3, 'INR', 'completed', $4)
+      `,
+      [
+        req.companyId,
+        "SLOT_EXPANSION",
+        totalAmount,
+        JSON.stringify({
+          additionalUsers,
+          additionalClients,
+
+          previousMaxUsers: currentMaxUsers,
+          previousMaxClients: currentMaxClients,
+
+          newMaxUsers,
+          newMaxClients,
+
+          purchasedBy: req.user?.id,
+          purchasedAt: new Date().toISOString(),
+        }),
+      ]
+    );
+
+    await dbClient.query("COMMIT");
+
+    console.log(
+      `✅ Slot expansion successful for company ${req.companyId}`,
+      {
+        additionalUsers,
+        additionalClients,
+        newMaxUsers,
+        newMaxClients,
+      }
+    );
+
+    /* ---------------------------
+       7. Response
+    ---------------------------- */
+
+    return res.json({
+      message: "SlotsPurchasedSuccessfully",
+      purchase: {
+        additionalUsers,
+        additionalClients,
+        totalAmount,
+        currency: "INR",
+      },
+      limits: {
+        previous: {
+          maxUsers: currentMaxUsers,
+          maxClients: currentMaxClients,
+        },
+        updated: {
+          maxUsers: newMaxUsers,
+          maxClients: newMaxClients,
+        },
+      },
+    });
+  } catch (error) {
+    await dbClient.query("ROLLBACK");
+
+    console.error("❌ Slot purchase failed:", error);
+
+    return res.status(500).json({
+      error: "PurchaseFailed",
+      message: error.message,
+    });
+  } finally {
+    dbClient.release();
+  }
+};
+
+
+
+/**
  * Get all available plans (for pricing page)
  */
 export const getAllPlans = async () => {

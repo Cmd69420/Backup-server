@@ -27,6 +27,7 @@ import integrationRoutes from "./routes/integrations.routes.js";
 import licenseRoutes from './routes/license.routes.js';
 import planRoutes from './routes/plan.routes.js'; // ← NEW
 import quickVisitsRoutes from './routes/quickVisits.routes.js';
+import { checkCompanyLicense } from "./middleware/licenseCheck.js";
 
 
 const app = express();
@@ -79,51 +80,73 @@ app.use("/api/license", authenticateToken, licenseRoutes);
 // ⚠️ IMPORTANT: attachPlanFeatures adds req.planFeatures to all these routes
 app.use("/clients", 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW: Attaches plan features
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   clientRoutes
 );
 
+// ✅ LOCATION LOGS
 app.use("/location-logs", 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   locationRoutes
 );
 
+// ✅ QUICK VISITS
 app.use("/api/quick-visits", 
   authenticateToken, 
-  attachCompanyContext, 
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
   attachPlanFeatures,
   quickVisitsRoutes
 );
 
+// ✅ MEETINGS
 app.use("/meetings", 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   meetingRoutes
 );
 
+// ✅ EXPENSES
 app.use("/expenses", 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   expenseRoutes
 );
 
+// ✅ SERVICES
 app.use('/services', 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   servicesRoutes
 );
 
+// ✅ MANUAL CLIENTS
 app.use('/api/manual-clients', 
   authenticateToken, 
-  attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
   manualClientRoutes
+);
+
+// ✅ ADMIN
+app.use("/admin", 
+  authenticateToken, 
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  attachPlanFeatures,
+  adminRoutes
 );
 
 // ============================================
@@ -132,7 +155,8 @@ app.use('/api/manual-clients',
 app.use("/admin", 
   authenticateToken, 
   attachCompanyContext, 
-  attachPlanFeatures,  // ← NEW
+  checkCompanyLicense,  // ← BLOCKS EXPIRED LICENSES
+  attachPlanFeatures,
   adminRoutes
 );
 
@@ -144,8 +168,22 @@ app.use("/super-admin/companies", companyRoutes);
 // ============================================
 // SYNC ROUTES
 // ============================================
-app.use("/api/sync", syncRoutes);
-app.use("/api/tally-sync", tallySyncRoutes);
+// ✅ SYNC ROUTES
+app.use("/api/sync",
+  authenticateToken,
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  syncRoutes
+);
+
+// ✅ TALLY SYNC (User-authenticated endpoints only)
+// Note: Middleware endpoints use authenticateMiddleware (no license check needed)
+app.use("/api/tally-sync",
+  authenticateToken,
+  attachCompanyContext,
+  checkCompanyLicense,  // ← BLOCKS EXPIRED
+  tallySyncRoutes
+);
 
 // ============================================
 // HEALTH CHECK

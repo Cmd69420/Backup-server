@@ -26,10 +26,24 @@ export const login = async (req, res) => {
        c.name as company_name,
        c.subdomain as company_subdomain,
        c.is_active as company_active,
-       c.email_domain as company_email_domain
+       c.email_domain as company_email_domain,
+       cl.expires_at as license_expires_at,
+       cl.plan as license_plan,
+       cl.license_key,
+       CASE 
+         WHEN cl.expires_at IS NULL THEN false
+         WHEN cl.expires_at < NOW() THEN true
+         ELSE false
+       END as license_expired,
+       CASE 
+         WHEN cl.expires_at IS NULL THEN NULL
+         WHEN cl.expires_at < NOW() THEN 0
+         ELSE EXTRACT(DAY FROM cl.expires_at - NOW())
+       END as days_until_expiry
      FROM users u
      LEFT JOIN profiles p ON u.id = p.user_id
      LEFT JOIN companies c ON u.company_id = c.id
+     LEFT JOIN company_licenses cl ON c.id = cl.company_id
      WHERE u.email = $1`,
     [email]
   );
@@ -45,20 +59,63 @@ export const login = async (req, res) => {
     return res.status(401).json({ error: "InvalidCredentials" });
   }
 
-  if (!user.is_super_admin && !user.company_id) {
-    return res.status(403).json({ 
-      error: "NoCompanyAssigned",
-      message: "Your account is not assigned to any company. Contact super admin." 
-    });
+  // ============================================
+  // ✅ LICENSE CHECKS (Super admins bypass)
+  // ============================================
+  
+  if (!user.is_super_admin) {
+    
+    // 1. Must have company
+    if (!user.company_id) {
+      return res.status(403).json({ 
+        error: "NoCompanyAssigned",
+        message: "Your account is not assigned to any company. Contact super admin." 
+      });
+    }
+
+    // 2. Company must be active
+    if (!user.company_active) {
+      console.log(`🚫 LOGIN BLOCKED: Company ${user.company_name} is deactivated`);
+      
+      return res.status(403).json({ 
+        error: "COMPANY_DEACTIVATED",
+        message: "Your company account has been deactivated. Contact support.",
+        companyName: user.company_name
+      });
+    }
+
+    // 3. Must have a license
+    if (!user.license_key) {
+      console.log(`🚫 LOGIN BLOCKED: No license for ${user.company_name}`);
+      
+      return res.status(403).json({ 
+        error: "NO_LICENSE",
+        message: "Your company does not have an active license. Please purchase one to continue.",
+        companyName: user.company_name,
+        purchaseUrl: 'https://license-system.onrender.com'
+      });
+    }
+
+    // 4. License must not be expired
+    if (user.license_expired) {
+      console.log(`🚫 LOGIN BLOCKED: License expired for ${user.company_name} on ${user.license_expires_at}`);
+      
+      return res.status(403).json({ 
+        error: "LICENSE_EXPIRED",
+        message: user.is_admin 
+          ? "Your company license has expired. Please renew to regain access."
+          : "Your company license has expired. Please contact your administrator to renew.",
+        companyName: user.company_name,
+        expiredOn: user.license_expires_at,
+        plan: user.license_plan,
+        daysExpired: Math.abs(Math.floor(user.days_until_expiry || 0)),
+        isAdmin: user.is_admin,
+        renewUrl: user.is_admin ? 'https://license-system.onrender.com' : null
+      });
+    }
   }
 
-  if (!user.is_super_admin && !user.company_active) {
-    return res.status(403).json({ 
-      error: "CompanyInactive",
-      message: "Your company account is currently inactive. Contact super admin." 
-    });
-  }
-
+  // Delete old sessions
   const deletedSessions = await pool.query(
     "DELETE FROM user_sessions WHERE user_id = $1 RETURNING id",
     [user.id]
@@ -68,12 +125,13 @@ export const login = async (req, res) => {
     console.log(`🧹 Deleted ${deletedSessions.rows.length} old sessions for ${user.email}`);
   }
 
+  // Generate token
   const token = tokenService.generateToken({
     id: user.id,
     email: user.email,
     isAdmin: user.is_admin,
     isSuperAdmin: user.is_super_admin || false,
-    isTrialUser: user.is_trial_user || false,  // ← NEW
+    isTrialUser: user.is_trial_user || false,
     companyId: user.company_id
   }, '7d');
 
@@ -93,12 +151,19 @@ export const login = async (req, res) => {
       workHoursEnd: user.work_hours_end,
       isAdmin: user.is_admin,
       isSuperAdmin: user.is_super_admin || false,
-      isTrialUser: user.is_trial_user || false,  // ← NEW
+      isTrialUser: user.is_trial_user || false,
       companyId: user.company_id,
       companyName: user.company_name,
       companySubdomain: user.company_subdomain,
-      companyEmailDomain: user.company_email_domain  // ← NEW
+      companyEmailDomain: user.company_email_domain
     },
+    // Include license info
+    license: user.is_super_admin ? null : {
+      plan: user.license_plan,
+      expiresAt: user.license_expires_at,
+      daysRemaining: user.days_until_expiry ? Math.floor(user.days_until_expiry) : null,
+      isExpiringSoon: user.days_until_expiry !== null && user.days_until_expiry <= 7
+    }
   });
 };
 
