@@ -6,25 +6,45 @@ import { pool } from "../db.js";
 /**
  * Get complete plan features for a company
  */
+/**
+ * Get complete plan features for a company
+ * ✅ Supports max_users override from company_licenses
+ */
 export const getCompanyPlanFeatures = async (companyId) => {
-  const result = await pool.query(`
+  const result = await pool.query(
+    `
     SELECT
       c.name AS company_name,
+
+      -- Plan name (fallback starter)
       COALESCE(cl.plan, 'starter') AS plan_name,
+
+      -- ✅ License override (purchased slots)
+      cl.max_users AS license_max_users,
+
+      -- Plan feature defaults
       pf.*
+
     FROM companies c
-    LEFT JOIN company_licenses cl 
+    LEFT JOIN company_licenses cl
       ON cl.company_id = c.id
-    LEFT JOIN plan_features pf 
+    LEFT JOIN plan_features pf
       ON pf.plan_name = COALESCE(cl.plan, 'starter')
+
     WHERE c.id = $1
-  `, [companyId]);
+    `,
+    [companyId]
+  );
 
   if (result.rows.length === 0) {
     throw new Error("Company not found");
   }
 
   const f = result.rows[0];
+
+  // ✅ Override max_users if company purchased extra slots
+  const effectiveMaxUsers =
+    f.license_max_users ?? f.max_users;
 
   return {
     planName: f.plan_name,
@@ -34,46 +54,56 @@ export const getCompanyPlanFeatures = async (companyId) => {
 
     limits: {
       users: {
-        max: f.max_users,
-        maxConcurrentSessions: f.max_concurrent_sessions
+        // ✅ FIXED: Uses purchased slot override
+        max: effectiveMaxUsers,
+        maxConcurrentSessions: f.max_concurrent_sessions,
       },
+
       clients: {
         max: f.max_clients,
-        importBatchSize: f.client_import_batch_size
+        importBatchSize: f.client_import_batch_size,
       },
+
       storage: {
-        maxGB: f.max_cloud_storage_gb
+        maxGB: f.max_cloud_storage_gb,
       },
+
       history: {
         locationDays: f.location_history_days,
         meetingDays: f.meeting_history_days,
-        expenseDays: f.expense_history_days
+        expenseDays: f.expense_history_days,
       },
+
       meetings: {
         maxAttachments: f.max_meeting_attachments_per_meeting,
-        attachmentMaxSizeMB: f.meeting_attachment_max_size_mb
+        attachmentMaxSizeMB: f.meeting_attachment_max_size_mb,
       },
+
       expenses: {
         maxReceiptImages: f.max_receipt_images_per_expense,
-        receiptMaxSizeMB: f.receipt_image_max_size_mb
+        receiptMaxSizeMB: f.receipt_image_max_size_mb,
       },
+
       services: {
-        maxPerClient: f.max_services_per_client
+        maxPerClient: f.max_services_per_client,
       },
+
       api: {
-        rateLimit: f.api_rate_limit_per_hour
-      }
+        rateLimit: f.api_rate_limit_per_hour,
+      },
     },
 
     tracking: {
       gpsEnabled: f.gps_tracking_enabled,
-      gpsIntervalMinutes: f.gps_tracking_interval_minutes
+      gpsIntervalMinutes: f.gps_tracking_interval_minutes,
     },
 
     features: {
       clientManagementType: f.client_management_type,
+
       pincodeFiltering: f.pincode_filtering_enabled,
       smartPincodeFiltering: f.smart_pincode_filtering_enabled,
+
       advancedSearch: f.advanced_search_enabled,
       bulkOperations: f.bulk_operations_enabled,
 
@@ -84,12 +114,14 @@ export const getCompanyPlanFeatures = async (companyId) => {
 
       tallySync: f.tally_sync_enabled,
       tallySyncFrequency: f.tally_sync_frequency_minutes,
+
       apiAccess: f.api_access_enabled,
       webhooks: f.webhook_enabled,
 
       basicReports: f.basic_reports_enabled,
       advancedAnalytics: f.advanced_analytics_enabled,
       customReports: f.custom_reports_enabled,
+
       dataExport: f.data_export_enabled,
       exportFormats: f.data_export_formats || [],
 
@@ -100,14 +132,15 @@ export const getCompanyPlanFeatures = async (companyId) => {
       routeOptimization: f.route_optimization_enabled,
 
       customBranding: f.custom_branding_enabled,
-      whiteLabel: f.white_label_enabled
+      whiteLabel: f.white_label_enabled,
     },
 
     support: {
-      level: f.support_level
-    }
+      level: f.support_level,
+    },
   };
 };
+
 
 
 /**
