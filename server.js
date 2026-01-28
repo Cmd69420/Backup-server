@@ -28,7 +28,7 @@ import licenseRoutes from './routes/license.routes.js';
 import planRoutes from './routes/plan.routes.js'; // ← NEW
 import quickVisitsRoutes from './routes/quickVisits.routes.js';
 import { checkCompanyLicense } from "./middleware/licenseCheck.js";
-
+import paymentRoutes from './routes/payment.routes.js';
 
 const app = express();
 
@@ -63,6 +63,7 @@ pool.query("SELECT NOW()", (err, res) => {
 // ============================================
 app.use("/auth", authRoutes);
 app.use("/integrations", integrationRoutes);
+app.use("/api/payment", paymentRoutes);
 
 // ============================================
 // PLAN MANAGEMENT ROUTES (Authenticated)
