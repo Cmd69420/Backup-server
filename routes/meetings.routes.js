@@ -87,4 +87,18 @@ router.post("/:id/attachments",
   asyncHandler(meetingsController.uploadAttachment)
 );
 
+
+router.post("/:meetingId/attachments",
+  authenticateToken,
+  blockTrialUserWrites,
+  asyncHandler(meetingsController.uploadMeetingAttachment)
+);
+
+// ✅ NEW: Delete attachment from meeting
+router.delete("/:meetingId/attachments/:attachmentId",
+  authenticateToken,
+  blockTrialUserWrites,
+  asyncHandler(meetingsController.deleteMeetingAttachment)
+);
+
 export default router;
