@@ -9,28 +9,36 @@ const router = express.Router();
 // All admin routes require authentication + admin role
 router.use(authenticateToken, requireAdmin);
 
-// Existing routes
-
+// ============================================
+// EXISTING ROUTES
+// ============================================
 router.get("/clients", asyncHandler(adminController.getAllClients));
 router.get("/users", asyncHandler(adminController.getAllUsers));
 router.get("/analytics", asyncHandler(adminController.getAnalytics));
-router.get("/location-logs/:userId", asyncHandler(adminController.getUserLocationLogs));
 router.get("/clock-status/:userId", asyncHandler(adminController.getClockStatus));
 router.get("/expenses/summary", asyncHandler(adminController.getExpensesSummary));
-router.get("/user-meetings/:userId", asyncHandler(adminController.getUserMeetings));
-router.get("/user-expenses/:userId", asyncHandler(adminController.getUserExpenses));
 router.get("/check", asyncHandler(adminController.checkAdminStatus));
 
-// NEW USER MANAGEMENT ROUTES
+// ============================================
+// USER MANAGEMENT ROUTES
+// ============================================
 router.post("/users", 
-  checkUserQuotaMiddleware,  // ← ADD THIS LINE
+  checkUserQuotaMiddleware,
   asyncHandler(adminController.createUser)
 );
 
+router.get("/users/:userId", asyncHandler(adminController.getUserDetails));
+router.put("/users/:userId", asyncHandler(adminController.updateUser));
+router.delete("/users/:userId", asyncHandler(adminController.deleteUser));
+router.post("/users/:userId/reset-password", asyncHandler(adminController.resetUserPassword));
+
+// ============================================
+// 🆕 LIVE TRACKER ENDPOINTS
+// ============================================
+
 /**
  * GET /api/admin/users/:userId/location-logs
- * Get location logs for a specific user
- * Query params: limit, startDate, endDate
+ * Get location logs for live tracking
  */
 router.get(
   "/users/:userId/location-logs",
@@ -39,8 +47,7 @@ router.get(
 
 /**
  * GET /api/admin/users/:userId/meetings
- * Get meetings for a specific user
- * Query params: limit, page, status, startDate, endDate
+ * Get meetings for live tracking
  */
 router.get(
   "/users/:userId/meetings",
@@ -49,8 +56,7 @@ router.get(
 
 /**
  * GET /api/admin/users/:userId/expenses
- * Get expenses for a specific user
- * Query params: limit, page, startDate, endDate
+ * Get expenses for live tracking
  */
 router.get(
   "/users/:userId/expenses",
@@ -59,8 +65,7 @@ router.get(
 
 /**
  * GET /api/admin/users/:userId/quick-visits
- * Get quick visits for a specific user
- * Query params: limit, page, startDate, endDate
+ * Get quick visits for live tracking
  */
 router.get(
   "/users/:userId/quick-visits",
@@ -69,18 +74,19 @@ router.get(
 
 /**
  * GET /api/admin/users/:userId/timeline
- * Get comprehensive activity timeline for a user
- * Combines all activities in chronological order
- * Query params: limit, startDate, endDate
+ * Get comprehensive activity timeline
  */
 router.get(
   "/users/:userId/timeline",
   asyncHandler(adminController.getUserTimeline)
 );
 
-router.get("/users/:userId", asyncHandler(adminController.getUserDetails));
-router.put("/users/:userId", asyncHandler(adminController.updateUser));
-router.delete("/users/:userId", asyncHandler(adminController.deleteUser));
-router.post("/users/:userId/reset-password", asyncHandler(adminController.resetUserPassword));
+// ============================================
+// DEPRECATED ROUTES (kept for backward compatibility)
+// ============================================
+// These will be removed in future versions
+router.get("/location-logs/:userId", asyncHandler(adminController.getUserLocationLogs));
+router.get("/user-meetings/:userId", asyncHandler(adminController.getUserMeetings));
+router.get("/user-expenses/:userId", asyncHandler(adminController.getUserExpenses));
 
 export default router;

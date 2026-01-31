@@ -153,7 +153,7 @@ app.use("/admin",
 // ============================================
 // ADMIN ROUTES (Company Admin + Plan Features)
 // ============================================
-app.use("/admin", 
+app.use("/api/admin", 
   authenticateToken, 
   attachCompanyContext, 
   checkCompanyLicense,  // ← BLOCKS EXPIRED LICENSES
