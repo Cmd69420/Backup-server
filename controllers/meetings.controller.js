@@ -2,6 +2,7 @@
 // UPDATED: All queries now filter by company_id
 
 import { pool } from "../db.js";
+import { incrementStorageUsed } from "../services/usage-tracker.js";
 
 export const startMeeting = async (req, res) => {
   const { clientId, latitude, longitude, accuracy } = req.body;
@@ -386,4 +387,177 @@ export const deleteMeeting = async (req, res) => {
   console.log(`🗑️ Meeting deleted: ${id}`);
 
   res.json({ message: "MeetingDeleted" });
+};
+
+
+export const uploadMeetingAttachment = async (req, res) => {
+  const { meetingId } = req.params;
+  const { fileData, fileName, fileType, fileSizeMB } = req.body;
+
+  if (!fileData) {
+    return res.status(400).json({ 
+      error: "FileRequired",
+      message: "fileData is required" 
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Verify meeting exists and belongs to user's company
+    const meetingCheck = await client.query(
+      `SELECT id, attachments FROM meetings 
+       WHERE id = $1 AND company_id = $2`,
+      [meetingId, req.companyId]
+    );
+
+    if (meetingCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        error: "MeetingNotFound",
+        message: "Meeting not found" 
+      });
+    }
+
+    const meeting = meetingCheck.rows[0];
+    const currentAttachments = meeting.attachments || [];
+
+    // Check plan limits
+    const planLimits = await client.query(
+      `SELECT pf.max_meeting_attachments_per_meeting, 
+              pf.meeting_attachment_max_size_mb
+       FROM company_licenses cl
+       JOIN plan_features pf ON pf.plan_name = COALESCE(cl.plan, 'starter')
+       WHERE cl.company_id = $1`,
+      [req.companyId]
+    );
+
+    const limits = planLimits.rows[0];
+
+    // Check attachment count limit
+    if (currentAttachments.length >= limits.max_meeting_attachments_per_meeting) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({
+        error: "ATTACHMENT_LIMIT_REACHED",
+        message: `Maximum ${limits.max_meeting_attachments_per_meeting} attachments allowed per meeting`
+      });
+    }
+
+    // Check file size limit
+    if (fileSizeMB > limits.meeting_attachment_max_size_mb) {
+      await client.query('ROLLBACK');
+      return res.status(413).json({
+        error: "FILE_TOO_LARGE",
+        message: `Maximum file size is ${limits.meeting_attachment_max_size_mb}MB`
+      });
+    }
+
+    // Create attachment object
+    const attachment = {
+      id: `att_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      fileName: fileName || 'attachment',
+      fileType: fileType || 'application/octet-stream',
+      fileData: fileData,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: req.user.id,
+      sizeMB: fileSizeMB
+    };
+
+    // Update meeting with new attachment
+    const updatedAttachments = [...currentAttachments, attachment];
+    
+    await client.query(
+      `UPDATE meetings 
+       SET attachments = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updatedAttachments), meetingId]
+    );
+
+    // Increment storage usage
+    if (req.companyId && fileSizeMB) {
+      await incrementStorageUsed(req.companyId, fileSizeMB, client);
+      console.log(`✅ Storage incremented by ${fileSizeMB}MB for meeting attachment`);
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: "Attachment uploaded successfully",
+      attachment: {
+        id: attachment.id,
+        fileName: attachment.fileName,
+        fileType: attachment.fileType,
+        sizeMB: attachment.sizeMB,
+        uploadedAt: attachment.uploadedAt
+      },
+      totalAttachments: updatedAttachments.length,
+      remainingSlots: limits.max_meeting_attachments_per_meeting - updatedAttachments.length
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error uploading meeting attachment:', error);
+    res.status(500).json({
+      error: "UploadFailed",
+      message: error.message
+    });
+  } finally {
+    client.release();
+  }
+};
+
+
+export const deleteMeetingAttachment = async (req, res) => {
+  const { meetingId, attachmentId } = req.params;
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const meetingResult = await client.query(
+      `SELECT attachments FROM meetings 
+       WHERE id = $1 AND company_id = $2`,
+      [meetingId, req.companyId]
+    );
+
+    if (meetingResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "MeetingNotFound" });
+    }
+
+    const attachments = meetingResult.rows[0].attachments || [];
+    const attachmentToDelete = attachments.find(a => a.id === attachmentId);
+
+    if (!attachmentToDelete) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: "AttachmentNotFound" });
+    }
+
+    // Remove attachment
+    const updatedAttachments = attachments.filter(a => a.id !== attachmentId);
+
+    await client.query(
+      `UPDATE meetings 
+       SET attachments = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updatedAttachments), meetingId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      message: "Attachment deleted successfully",
+      deletedAttachment: attachmentToDelete.fileName
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error deleting attachment:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
+  }
 };

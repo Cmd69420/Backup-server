@@ -1,90 +1,79 @@
 // routes/meetings.routes.js
-// FINAL VERSION: With plan limitations + trial user restrictions
+// ✅ FIXED VERSION - Route conflict resolved
 
 import express from "express";
-import multer from "multer";
 import { authenticateToken } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/errorHandler.js";
-import { checkMeetingAttachmentUpload } from "../middleware/featureAuth.js";
 import { 
   blockTrialUserWrites, 
   enforceTrialUserLimits 
-} from "../middleware/trialUser.js";  // ← NEW IMPORT
+} from "../middleware/trialUser.js";
 import * as meetingsController from "../controllers/meetings.controller.js";
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
 
 // ============================================
-// START MEETING
+// MEETING CRUD OPERATIONS
 // ============================================
-// Blocked for trial users
+
+// Start meeting
 router.post("/", 
   authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(meetingsController.startMeeting)
 );
 
-// ============================================
-// GET ACTIVE MEETING
-// ============================================
-// Allow trial users with limits
+// Get active meeting for client
 router.get("/active/:clientId", 
   authenticateToken,
-  enforceTrialUserLimits,  // ← NEW: Allow trial users
+  enforceTrialUserLimits,
   asyncHandler(meetingsController.getActiveMeeting)
 );
 
-// ============================================
-// GET MEETING BY ID
-// ============================================
-// Allow trial users with limits
-router.get("/:id", 
-  authenticateToken,
-  enforceTrialUserLimits,  // ← NEW: Allow trial users
-  asyncHandler(meetingsController.getMeetingById)
-);
-
-// ============================================
-// GET ALL MEETINGS
-// ============================================
-// Allow trial users with limits
+// Get all meetings (must be BEFORE /:id to avoid route conflicts)
 router.get("/", 
   authenticateToken,
-  enforceTrialUserLimits,  // ← NEW: Allow trial users
+  enforceTrialUserLimits,
   asyncHandler(meetingsController.getMeetings)
 );
 
-// ============================================
-// UPDATE MEETING
-// ============================================
-// Blocked for trial users
+// Get meeting by ID
+router.get("/:id", 
+  authenticateToken,
+  enforceTrialUserLimits,
+  asyncHandler(meetingsController.getMeetingById)
+);
+
+// Update meeting
 router.put("/:id", 
   authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(meetingsController.updateMeeting)
 );
 
-// ============================================
-// DELETE MEETING
-// ============================================
-// Blocked for trial users
+// Delete meeting
 router.delete("/:id", 
   authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
+  blockTrialUserWrites,
   asyncHandler(meetingsController.deleteMeeting)
 );
 
 // ============================================
-// UPLOAD MEETING ATTACHMENT
+// ATTACHMENT OPERATIONS
 // ============================================
-// Blocked for trial users
-router.post("/:id/attachments", 
+
+// Upload meeting attachment (base64 JSON format)
+router.post("/:meetingId/attachments",
   authenticateToken,
-  blockTrialUserWrites,  // ← NEW: Block trial users
-  upload.single("file"),
-  checkMeetingAttachmentUpload,
-  asyncHandler(meetingsController.uploadAttachment)
+  blockTrialUserWrites,
+  asyncHandler(meetingsController.uploadMeetingAttachment)
+);
+
+// Delete attachment from meeting
+router.delete("/:meetingId/attachments/:attachmentId",
+  authenticateToken,
+  blockTrialUserWrites,
+  asyncHandler(meetingsController.deleteMeetingAttachment)
 );
 
 export default router;
