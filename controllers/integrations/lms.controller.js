@@ -1,5 +1,5 @@
 // controllers/integrations/lms.controller.js - UPDATED
-// Now captures and stores BOTH lms_user_id AND lms_license_id
+// Now captures and stores transaction history
 
 import bcrypt from "bcryptjs";
 import { pool } from "../../db.js";
@@ -16,7 +16,7 @@ export const handleLicensePurchase = async (req, res) => {
     const {
       purchaseId,
       licenseKey,
-      lmsLicenseId,  // ✅ NEW: MongoDB _id from LMS (e.g., "6972048cf19aeec8c14bb571")
+      lmsLicenseId,
       email,
       password,
       fullName,
@@ -24,9 +24,25 @@ export const handleLicensePurchase = async (req, res) => {
       subdomain,
       planType,
       maxUsers,
+      maxClients,
+      storagePerUser,
+      apiCallsPerUser,
       expiryDate,
+      startDate,
+      validityDays,
+      billingCycle,
+      originalAmount,
+      creditApplied,
+      subtotal,
+      gstAmount,
+      totalPaid,
+      paymentId,
+      orderId,
+      oldPlanName,
+      oldLicenseKey,
       isRenewal = false,
-      lmsUserId  // ✅ LMS user ID who purchased the license
+      isUpgrade = false,
+      lmsUserId
     } = req.body;
 
     console.log("📦 Payload received:");
@@ -35,12 +51,15 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Company: ${companyName}`);
     console.log(`   Subdomain: ${subdomain}`);
     console.log(`   License Key: ${licenseKey}`);
-    console.log(`   LMS License ID: ${lmsLicenseId || 'NOT PROVIDED'}`);  // ✅ MongoDB _id
+    console.log(`   LMS License ID: ${lmsLicenseId || 'NOT PROVIDED'}`);
     console.log(`   LMS User ID: ${lmsUserId || 'NOT PROVIDED'}`);
     console.log(`   Plan: ${planType}`);
+    console.log(`   Billing Cycle: ${billingCycle || 'NOT PROVIDED'}`);
     console.log(`   Max Users: ${maxUsers}`);
+    console.log(`   Total Paid: ${totalPaid || 'NOT PROVIDED'}`);
     console.log(`   Expiry: ${expiryDate}`);
     console.log(`   Is Renewal: ${isRenewal}`);
+    console.log(`   Is Upgrade: ${isUpgrade}`);
     console.log(`   Password provided: ${password ? 'Yes' : 'No'}`);
 
     // Validate required fields
@@ -155,11 +174,11 @@ export const handleLicensePurchase = async (req, res) => {
       [
         company.id,
         licenseKey,
-        lmsLicenseId,  // ✅ Store LMS MongoDB _id
+        lmsLicenseId,
         planType || "Standard",
         maxUsers || 1,
         expiryDate ? new Date(expiryDate) : null,
-        lmsUserId || email  // ✅ Use lmsUserId if provided, otherwise fallback to email
+        lmsUserId || email
       ]
     );
 
@@ -170,6 +189,73 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`✅ License ${licenseOp}: ${licenseKey}`);
     console.log(`   📋 LMS License ID stored: ${storedLmsLicenseId || 'NONE'}`);
     console.log(`   📋 LMS User ID stored: ${storedLmsUserId}`);
+
+    // ✅ NEW: Store transaction history
+    console.log("\n💰 Recording transaction history...");
+    
+    const transactionType = isUpgrade ? 'upgrade' : 
+                           isRenewal ? 'renewal' : 
+                           'new_purchase';
+
+    await client.query(
+      `INSERT INTO license_transactions (
+         company_id,
+         lms_user_id,
+         lms_license_id,
+         transaction_type,
+         license_key,
+         plan_name,
+         billing_cycle,
+         original_amount,
+         credit_applied,
+         subtotal,
+         gst_amount,
+         total_paid,
+         currency,
+         max_users,
+         max_clients,
+         storage_per_user,
+         api_calls_per_user,
+         start_date,
+         end_date,
+         validity_days,
+         payment_id,
+         order_id,
+         old_plan_name,
+         old_license_key,
+         raw_payload
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+       RETURNING id`,
+      [
+        company.id,
+        lmsUserId || email,
+        lmsLicenseId,
+        transactionType,
+        licenseKey,
+        planType || 'Standard',
+        billingCycle || 'monthly',
+        originalAmount || 0,
+        creditApplied || 0,
+        subtotal || totalPaid || 0,
+        gstAmount || 0,
+        totalPaid || 0,
+        'INR',
+        maxUsers || 1,
+        maxClients || null,
+        storagePerUser || null,
+        apiCallsPerUser || null,
+        startDate ? new Date(startDate) : new Date(),
+        expiryDate ? new Date(expiryDate) : null,
+        validityDays || null,
+        paymentId || null,
+        orderId || null,
+        oldPlanName || null,
+        oldLicenseKey || null,
+        JSON.stringify(req.body) // Store full payload for debugging
+      ]
+    );
+
+    console.log(`✅ Transaction recorded: ${transactionType}`);
 
     // Handle user account
     const existingUser = await client.query(
@@ -255,12 +341,17 @@ export const handleLicensePurchase = async (req, res) => {
       },
       license: {
         key: licenseKey,
-        lmsLicenseId: storedLmsLicenseId,  // ✅ NEW
+        lmsLicenseId: storedLmsLicenseId,
         lmsUserId: storedLmsUserId,
         plan: planType,
         maxUsers: maxUsers,
         expiryDate: expiryDate,
         operation: licenseOp
+      },
+      transaction: {
+        type: transactionType,
+        totalPaid: totalPaid,
+        billingCycle: billingCycle
       }
     });
 

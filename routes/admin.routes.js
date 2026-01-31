@@ -26,6 +26,58 @@ router.post("/users",
   checkUserQuotaMiddleware,  // ← ADD THIS LINE
   asyncHandler(adminController.createUser)
 );
+
+/**
+ * GET /api/admin/users/:userId/location-logs
+ * Get location logs for a specific user
+ * Query params: limit, startDate, endDate
+ */
+router.get(
+  "/users/:userId/location-logs",
+  asyncHandler(adminController.getUserLocationLogs)
+);
+
+/**
+ * GET /api/admin/users/:userId/meetings
+ * Get meetings for a specific user
+ * Query params: limit, page, status, startDate, endDate
+ */
+router.get(
+  "/users/:userId/meetings",
+  asyncHandler(adminController.getUserMeetings)
+);
+
+/**
+ * GET /api/admin/users/:userId/expenses
+ * Get expenses for a specific user
+ * Query params: limit, page, startDate, endDate
+ */
+router.get(
+  "/users/:userId/expenses",
+  asyncHandler(adminController.getUserExpenses)
+);
+
+/**
+ * GET /api/admin/users/:userId/quick-visits
+ * Get quick visits for a specific user
+ * Query params: limit, page, startDate, endDate
+ */
+router.get(
+  "/users/:userId/quick-visits",
+  asyncHandler(adminController.getUserQuickVisits)
+);
+
+/**
+ * GET /api/admin/users/:userId/timeline
+ * Get comprehensive activity timeline for a user
+ * Combines all activities in chronological order
+ * Query params: limit, startDate, endDate
+ */
+router.get(
+  "/users/:userId/timeline",
+  asyncHandler(adminController.getUserTimeline)
+);
+
 router.get("/users/:userId", asyncHandler(adminController.getUserDetails));
 router.put("/users/:userId", asyncHandler(adminController.updateUser));
 router.delete("/users/:userId", asyncHandler(adminController.deleteUser));

@@ -18,4 +18,7 @@ router.get("/my-license/history", asyncHandler(licenseController.getMyLicenseHis
 // Get company user count
 router.get("/my-license/user-count", asyncHandler(licenseController.getCompanyUserCount));
 
+// Get transaction history
+router.get("/transactions", asyncHandler(licenseController.getTransactionHistory));
+
 export default router;

@@ -225,63 +225,70 @@ export const getAnalytics = async (req, res) => {
 };
 
 export const getUserLocationLogs = async (req, res) => {
+  const { userId } = req.params;
+  const { limit = 100, startDate, endDate } = req.query;
+
   try {
-    const { page = 1, limit = 200 } = req.query;
-    const offset = (page - 1) * limit;
-    const userId = req.params.userId;
+    // Verify user belongs to admin's company
+    const userCheck = await pool.query(
+      `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
+      [userId, req.companyId]
+    );
 
-    // Build correct company filter
-    let companyClause = "";
-    let params = [userId];
-
-    if (!req.isSuperAdmin) {
-      companyClause = "AND company_id = $2";
-      params.push(req.companyId);
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        error: "UserNotFound",
+        message: "User not found in your company" 
+      });
     }
 
-    // Fetch logs
-    const logsResult = await pool.query(
-      `
-      SELECT id, latitude, longitude, accuracy, activity,
-             battery, notes, pincode, timestamp
+    let query = `
+      SELECT 
+        id,
+        user_id as "userId",
+        latitude,
+        longitude,
+        accuracy,
+        activity,
+        notes,
+        pincode,
+        battery,
+        timestamp
       FROM location_logs
-      WHERE user_id = $1
-      ${companyClause}
-      ORDER BY timestamp DESC
-      LIMIT ${limit} OFFSET ${offset}
-      `,
-      params
-    );
+      WHERE user_id = $1 AND company_id = $2
+    `;
 
-    // Count total logs
-    const countResult = await pool.query(
-      `
-      SELECT COUNT(*)
-      FROM location_logs
-      WHERE user_id = $1
-      ${companyClause}
-      `,
-      params
-    );
+    const params = [userId, req.companyId];
+    let paramCount = 2;
+
+    if (startDate) {
+      paramCount++;
+      query += ` AND timestamp >= $${paramCount}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      paramCount++;
+      query += ` AND timestamp <= $${paramCount}`;
+      params.push(endDate);
+    }
+
+    query += ` ORDER BY timestamp DESC LIMIT $${paramCount + 1}`;
+    params.push(parseInt(limit));
+
+    const result = await pool.query(query, params);
 
     res.json({
-      logs: logsResult.rows,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total: parseInt(countResult.rows[0].count),
-        totalPages: Math.ceil(countResult.rows[0].count / limit),
-      },
+      locationLogs: result.rows,
+      total: result.rows.length
     });
 
-  } catch (err) {
-    console.error("❌ Location logs fetch failed:", err);
-    res.status(500).json({
-      error: "FailedToFetchLocationLogs",
-      message: err.message,
-    });
+  } catch (error) {
+    console.error("Error fetching user location logs:", error);
+    res.status(500).json({ error: error.message });
   }
 };
+
 
 
 export const getClockStatus = async (req, res) => {
@@ -350,169 +357,442 @@ export const getExpensesSummary = async (req, res) => {
 };
 
 export const getUserMeetings = async (req, res) => {
-  const userId = req.params.userId;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 20;
+  const { userId } = req.params;
+  const { limit = 50, page = 1, status, startDate, endDate } = req.query;
   const offset = (page - 1) * limit;
 
-  if (!req.isSuperAdmin) {
+  try {
+    // Verify user belongs to admin's company
     const userCheck = await pool.query(
-      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
       [userId, req.companyId]
     );
-    
+
     if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: "UserNotFound" });
+      return res.status(404).json({ 
+        error: "UserNotFound",
+        message: "User not found in your company" 
+      });
     }
+
+    let query = `
+      SELECT 
+        m.id,
+        m.user_id as "userId",
+        m.client_id as "clientId",
+        m.start_time as "startTime",
+        m.end_time as "endTime",
+        m.start_latitude as "startLatitude",
+        m.start_longitude as "startLongitude",
+        m.start_accuracy as "startAccuracy",
+        m.end_latitude as "endLatitude",
+        m.end_longitude as "endLongitude",
+        m.end_accuracy as "endAccuracy",
+        m.status,
+        m.comments,
+        m.attachments,
+        m.created_at as "createdAt",
+        m.updated_at as "updatedAt",
+        c.name as "clientName",
+        c.address as "clientAddress"
+      FROM meetings m
+      LEFT JOIN clients c ON m.client_id = c.id
+      WHERE m.user_id = $1 AND m.company_id = $2
+    `;
+
+    const params = [userId, req.companyId];
+    let paramCount = 2;
+
+    if (status) {
+      paramCount++;
+      query += ` AND m.status = $${paramCount}`;
+      params.push(status);
+    }
+
+    if (startDate) {
+      paramCount++;
+      query += ` AND m.start_time >= $${paramCount}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      paramCount++;
+      query += ` AND m.start_time <= $${paramCount}`;
+      params.push(endDate);
+    }
+
+    query += ` ORDER BY m.start_time DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) FROM meetings WHERE user_id = $1 AND company_id = $2`;
+    const countParams = [userId, req.companyId];
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      meetings: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching user meetings:", error);
+    res.status(500).json({ error: error.message });
   }
-
-  const companyFilter = req.isSuperAdmin ? '' : 'AND m.company_id = $4';
-  const params = [userId, limit, offset];
-  if (!req.isSuperAdmin) {
-    params.push(req.companyId);
-  }
-
-  const totalCountResult = await pool.query(
-    `SELECT COUNT(*)
-     FROM meetings m
-     WHERE m.user_id = $1
-     ${req.isSuperAdmin ? '' : 'AND m.company_id = $2'}`,
-    req.isSuperAdmin ? [userId] : [userId, req.companyId]
-  );
-
-  const totalCount = parseInt(totalCountResult.rows[0].count);
-
-  const result = await pool.query(
-    `SELECT 
-       m.id,
-       m.user_id AS "userId",
-       m.client_id AS "clientId",
-       m.start_time AS "startTime",
-       m.end_time AS "endTime",
-       m.start_latitude AS "startLatitude",
-       m.start_longitude AS "startLongitude",
-       m.start_accuracy AS "startAccuracy",
-       m.end_latitude AS "endLatitude",
-       m.end_longitude AS "endLongitude",
-       m.end_accuracy AS "endAccuracy",
-       m.status,
-       m.comments,
-       m.attachments,
-       m.created_at AS "createdAt",
-       m.updated_at AS "updatedAt",
-       c.name AS "clientName",
-       c.address AS "clientAddress"
-     FROM meetings m
-     LEFT JOIN clients c ON m.client_id = c.id
-     WHERE m.user_id = $1
-     ${companyFilter}
-     ORDER BY m.start_time DESC
-     LIMIT $2 OFFSET $3`,
-    params
-  );
-
-  console.log(`Fetched ${result.rows.length} meetings for user ${userId}`);
-
-  res.json({
-    meetings: result.rows,
-    pagination: {
-      page,
-      limit,
-      total: totalCount,
-      totalPages: Math.ceil(totalCount / limit),
-    },
-  });
 };
 
 export const getUserExpenses = async (req, res) => {
-  const userId = req.params.userId;
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 50;
+  const { userId } = req.params;
+  const { limit = 50, page = 1, startDate, endDate } = req.query;
   const offset = (page - 1) * limit;
 
-  if (!req.isSuperAdmin) {
+  try {
+    // Verify user belongs to admin's company
     const userCheck = await pool.query(
-      "SELECT id FROM users WHERE id = $1 AND company_id = $2",
+      `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
       [userId, req.companyId]
     );
-    
+
     if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: "UserNotFound" });
+      return res.status(404).json({ 
+        error: "UserNotFound",
+        message: "User not found in your company" 
+      });
     }
+
+    let query = `
+      SELECT 
+        id,
+        user_id,
+        trip_name,
+        is_multi_leg,
+        start_location,
+        end_location,
+        travel_date,
+        distance_km,
+        transport_mode,
+        amount_spent,
+        currency,
+        notes,
+        receipt_images,
+        client_id,
+        created_at,
+        updated_at
+      FROM trip_expenses
+      WHERE user_id = $1 AND company_id = $2
+    `;
+
+    const params = [userId, req.companyId];
+    let paramCount = 2;
+
+    if (startDate) {
+      paramCount++;
+      query += ` AND travel_date >= $${paramCount}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      paramCount++;
+      query += ` AND travel_date <= $${paramCount}`;
+      params.push(endDate);
+    }
+
+    query += ` ORDER BY travel_date DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Transform and fetch legs for multi-leg expenses
+    const expenses = [];
+    for (const expense of result.rows) {
+      const transformed = {
+        id: expense.id,
+        user_id: expense.user_id,
+        trip_name: expense.trip_name,
+        is_multi_leg: expense.is_multi_leg || false,
+        start_location: expense.start_location,
+        end_location: expense.end_location,
+        travel_date: expense.travel_date,
+        distance_km: expense.distance_km,
+        transport_mode: expense.transport_mode,
+        amount_spent: expense.amount_spent,
+        currency: expense.currency,
+        notes: expense.notes,
+        receipt_images: expense.receipt_images || [],
+        client_id: expense.client_id,
+        created_at: expense.created_at,
+        updated_at: expense.updated_at,
+        legs: []
+      };
+
+      // Fetch legs if multi-leg
+      if (expense.is_multi_leg) {
+        const legsResult = await pool.query(
+          `SELECT * FROM trip_legs WHERE expense_id = $1 ORDER BY leg_number`,
+          [expense.id]
+        );
+        transformed.legs = legsResult.rows.map(leg => ({
+          id: leg.id,
+          expense_id: leg.expense_id,
+          leg_number: leg.leg_number,
+          start_location: leg.start_location,
+          end_location: leg.end_location,
+          distance_km: leg.distance_km,
+          transport_mode: leg.transport_mode,
+          amount_spent: leg.amount_spent,
+          notes: leg.notes,
+          created_at: leg.created_at
+        }));
+      }
+
+      expenses.push(transformed);
+    }
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) FROM trip_expenses WHERE user_id = $1 AND company_id = $2`;
+    const countParams = [userId, req.companyId];
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      expenses: expenses,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching user expenses:", error);
+    res.status(500).json({ error: error.message });
   }
-
-  const companyFilter = req.isSuperAdmin ? '' : 'AND company_id = $2';
-
-  const totalResult = await pool.query(
-    `SELECT COUNT(*) FROM trip_expenses WHERE user_id = $1 ${companyFilter}`,
-    req.isSuperAdmin ? [userId] : [userId, req.companyId]
-  );
-  const total = parseInt(totalResult.rows[0].count);
-
-  const logsResult = await pool.query(
-    `SELECT * FROM trip_expenses
-     WHERE user_id = $1
-     ${companyFilter}
-     ORDER BY travel_date DESC
-     LIMIT $${req.isSuperAdmin ? 2 : 3} OFFSET $${req.isSuperAdmin ? 3 : 4}`,
-    req.isSuperAdmin ? [userId, limit, offset] : [userId, req.companyId, limit, offset]
-  );
-
-  const transformExpenseRow = (row) => ({
-    id: row.id,
-    userId: row.user_id,
-    tripName: row.trip_name,
-    isMultiLeg: row.is_multi_leg || false,
-    startLocation: row.start_location,
-    endLocation: row.end_location,
-    travelDate: row.travel_date,
-    distanceKm: row.distance_km,
-    transportMode: row.transport_mode,
-    amountSpent: row.amount_spent,
-    currency: row.currency,
-    notes: row.notes,
-    receiptUrls: row.receipt_images || [],
-    clientId: row.client_id,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    legs: []
-  });
-
-  const transformLegRow = (row) => ({
-    id: row.id,
-    expenseId: row.expense_id,
-    legNumber: row.leg_number,
-    startLocation: row.start_location,
-    endLocation: row.end_location,
-    distanceKm: row.distance_km,
-    transportMode: row.transport_mode,
-    amountSpent: row.amount_spent,
-    notes: row.notes,
-    createdAt: row.created_at
-  });
-
-  const expenses = logsResult.rows.map(transformExpenseRow);
-
-  for (const expense of expenses) {
-    if (expense.isMultiLeg) {
-      const legsResult = await pool.query(
-        `SELECT * FROM trip_legs WHERE expense_id = $1 ORDER BY leg_number`,
-        [expense.id]
-      );
-      expense.legs = legsResult.rows.map(transformLegRow);
-    }
-  }
-
-  res.json({
-    expenses: expenses,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit)
-    }
-  });
 };
+
+export const getUserQuickVisits = async (req, res) => {
+  const { userId } = req.params;
+  const { limit = 50, page = 1, startDate, endDate } = req.query;
+  const offset = (page - 1) * limit;
+
+  try {
+    // Verify user belongs to admin's company
+    const userCheck = await pool.query(
+      `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
+      [userId, req.companyId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        error: "UserNotFound",
+        message: "User not found in your company" 
+      });
+    }
+
+    let query = `
+      SELECT 
+        qv.id,
+        qv.visit_type as "visitType",
+        qv.latitude,
+        qv.longitude,
+        qv.accuracy,
+        qv.notes,
+        qv.created_at as "createdAt",
+        c.id as "clientId",
+        c.name as "clientName",
+        c.address as "clientAddress"
+      FROM quick_visits qv
+      LEFT JOIN clients c ON qv.client_id = c.id
+      WHERE qv.user_id = $1 AND qv.company_id = $2
+    `;
+
+    const params = [userId, req.companyId];
+    let paramCount = 2;
+
+    if (startDate) {
+      paramCount++;
+      query += ` AND qv.created_at >= $${paramCount}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      paramCount++;
+      query += ` AND qv.created_at <= $${paramCount}`;
+      params.push(endDate);
+    }
+
+    query += ` ORDER BY qv.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+
+    // Get total count
+    let countQuery = `SELECT COUNT(*) FROM quick_visits WHERE user_id = $1 AND company_id = $2`;
+    const countParams = [userId, req.companyId];
+    const countResult = await pool.query(countQuery, countParams);
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      visits: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total: total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error("Error fetching user quick visits:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export const getUserTimeline = async (req, res) => {
+  const { userId } = req.params;
+  const { limit = 100, startDate, endDate } = req.query;
+
+  try {
+    // Verify user belongs to admin's company
+    const userCheck = await pool.query(
+      `SELECT id, email FROM users WHERE id = $1 AND company_id = $2`,
+      [userId, req.companyId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        error: "UserNotFound",
+        message: "User not found in your company" 
+      });
+    }
+
+    const params = [userId, req.companyId];
+    let dateFilter = "";
+    let paramCount = 2;
+
+    if (startDate) {
+      paramCount++;
+      dateFilter += ` AND timestamp >= $${paramCount}`;
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      paramCount++;
+      dateFilter += ` AND timestamp <= $${paramCount}`;
+      params.push(endDate);
+    }
+
+    // Fetch all activity types
+    const query = `
+      SELECT * FROM (
+        -- Location logs
+        SELECT 
+          'location' as type,
+          id,
+          timestamp,
+          latitude,
+          longitude,
+          accuracy,
+          battery,
+          pincode,
+          activity,
+          notes,
+          NULL as client_name,
+          NULL as amount,
+          NULL as status
+        FROM location_logs
+        WHERE user_id = $1 AND company_id = $2 ${dateFilter}
+
+        UNION ALL
+
+        -- Meetings
+        SELECT 
+          'meeting' as type,
+          m.id,
+          m.start_time as timestamp,
+          m.start_latitude as latitude,
+          m.start_longitude as longitude,
+          m.start_accuracy as accuracy,
+          NULL as battery,
+          NULL as pincode,
+          NULL as activity,
+          m.comments as notes,
+          c.name as client_name,
+          NULL as amount,
+          m.status
+        FROM meetings m
+        LEFT JOIN clients c ON m.client_id = c.id
+        WHERE m.user_id = $1 AND m.company_id = $2 ${dateFilter.replace('timestamp', 'm.start_time')}
+
+        UNION ALL
+
+        -- Expenses
+        SELECT 
+          'expense' as type,
+          id,
+          to_timestamp(travel_date::bigint / 1000) as timestamp,
+          NULL as latitude,
+          NULL as longitude,
+          NULL as accuracy,
+          NULL as battery,
+          NULL as pincode,
+          transport_mode as activity,
+          notes,
+          NULL as client_name,
+          amount_spent as amount,
+          NULL as status
+        FROM trip_expenses
+        WHERE user_id = $1 AND company_id = $2 ${dateFilter.replace('timestamp', 'to_timestamp(travel_date::bigint / 1000)')}
+
+        UNION ALL
+
+        -- Quick Visits
+        SELECT 
+          'visit' as type,
+          qv.id,
+          qv.created_at as timestamp,
+          qv.latitude,
+          qv.longitude,
+          qv.accuracy,
+          NULL as battery,
+          NULL as pincode,
+          qv.visit_type as activity,
+          qv.notes,
+          c.name as client_name,
+          NULL as amount,
+          NULL as status
+        FROM quick_visits qv
+        LEFT JOIN clients c ON qv.client_id = c.id
+        WHERE qv.user_id = $1 AND qv.company_id = $2 ${dateFilter.replace('timestamp', 'qv.created_at')}
+
+      ) combined
+      ORDER BY timestamp DESC
+      LIMIT $${paramCount + 1}
+    `;
+
+    params.push(parseInt(limit));
+
+    const result = await pool.query(query, params);
+
+    res.json({
+      timeline: result.rows,
+      user: userCheck.rows[0],
+      total: result.rows.length
+    });
+
+  } catch (error) {
+    console.error("Error fetching user timeline:", error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 
 export const checkAdminStatus = (req, res) => {
   res.json({ 
@@ -809,3 +1089,7 @@ export const resetUserPassword = async (req, res) => {
   console.log(`🔑 Admin reset password for user: ${userCheck.rows[0].email}`);
   res.json({ message: "PasswordReset", email: userCheck.rows[0].email });
 };
+
+
+
+

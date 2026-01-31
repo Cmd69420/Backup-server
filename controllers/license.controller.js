@@ -238,3 +238,87 @@ export const getCompanyUserCount = async (req, res) => {
     });
   }
 };
+
+
+/**
+ * Get payment/upgrade history for company
+ */
+export const getTransactionHistory = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
+
+    // Get user's company
+    const companyResult = await pool.query(
+      `SELECT company_id FROM users WHERE id = $1`,
+      [userId]
+    );
+
+    if (companyResult.rows.length === 0 || !companyResult.rows[0].company_id) {
+      return res.status(404).json({ 
+        error: "NoCompanyAssigned",
+        message: "User is not assigned to any company" 
+      });
+    }
+
+    const companyId = companyResult.rows[0].company_id;
+
+    // Get transaction history
+    const result = await pool.query(
+      `SELECT 
+         id,
+         transaction_type,
+         license_key,
+         plan_name,
+         billing_cycle,
+         original_amount,
+         credit_applied,
+         subtotal,
+         gst_amount,
+         total_paid,
+         currency,
+         max_users,
+         max_clients,
+         storage_per_user,
+         api_calls_per_user,
+         start_date,
+         end_date,
+         validity_days,
+         old_plan_name,
+         payment_id,
+         order_id,
+         created_at
+       FROM license_transactions
+       WHERE company_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [companyId, limit, offset]
+    );
+
+    // Get total count
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM license_transactions WHERE company_id = $1`,
+      [companyId]
+    );
+
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      transactions: result.rows,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Error fetching transaction history:", error);
+    res.status(500).json({ 
+      error: "ServerError",
+      message: "Failed to fetch transaction history" 
+    });
+  }
+};
