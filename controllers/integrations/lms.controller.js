@@ -280,13 +280,16 @@ export const handleLicensePurchase = async (req, res) => {
       }
       
       if (password && password.trim() !== '') {
-        const hashedPassword = await bcrypt.hash(password, 10);
-        await client.query(
-          `UPDATE users SET password = $1 WHERE id = $2`,
-          [hashedPassword, user.id]
-        );
-        console.log(`✅ User password updated`);
-      }
+
+  // ✅ LMS already sends hashed password → store directly
+  await client.query(
+    `UPDATE users SET password = $1 WHERE id = $2`,
+    [password, user.id]
+  );
+
+  console.log(`✅ User password hash stored (from LMS)`);
+}
+
 
     } else {
       // CREATE NEW USER
