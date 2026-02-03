@@ -300,14 +300,14 @@ export const handleLicensePurchase = async (req, res) => {
         console.log(`🔐 Generated password for user`);
       }
 
-      const hashedPassword = await bcrypt.hash(userPassword, 10);
-      
-      const userResult = await client.query(
-        `INSERT INTO users (email, password, is_admin, company_id)
-         VALUES ($1, $2, true, $3)
-         RETURNING id, email`,
-        [email, hashedPassword, company.id]
-      );
+      // ✅ LMS already sends hashed password → store directly
+  const userResult = await client.query(
+  `INSERT INTO users (email, password, is_admin, company_id)
+   VALUES ($1, $2, true, $3)
+   RETURNING id, email`,
+  [email, userPassword, company.id]
+);
+
 
       user = userResult.rows[0];
       console.log(`✅ User created: ${user.email} (Admin)`);
