@@ -44,6 +44,7 @@ export const handleLicensePurchase = async (req, res) => {
       isUpgrade = false,
       lmsUserId
     } = req.body;
+    const effectiveLmsLicenseId = lmsLicenseId || purchaseId;
 
     console.log("📦 Payload received:");
     console.log(`   Purchase ID: ${purchaseId}`);
@@ -51,7 +52,7 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Company: ${companyName}`);
     console.log(`   Subdomain: ${subdomain}`);
     console.log(`   License Key: ${licenseKey}`);
-    console.log(`   LMS License ID: ${lmsLicenseId || 'NOT PROVIDED'}`);
+    console.log(`   LMS License ID: ${effectiveLmsLicenseId}`);
     console.log(`   LMS User ID: ${lmsUserId || 'NOT PROVIDED'}`);
     console.log(`   Plan: ${planType}`);
     console.log(`   Billing Cycle: ${billingCycle || 'NOT PROVIDED'}`);
@@ -61,6 +62,10 @@ export const handleLicensePurchase = async (req, res) => {
     console.log(`   Is Renewal: ${isRenewal}`);
     console.log(`   Is Upgrade: ${isUpgrade}`);
     console.log(`   Password provided: ${password ? 'Yes' : 'No'}`);
+
+   
+
+
 
     // Validate required fields
     if (!email || !companyName || !subdomain || !licenseKey) {
@@ -72,12 +77,10 @@ export const handleLicensePurchase = async (req, res) => {
     }
 
     // ✅ CRITICAL: Warn if lmsLicenseId is missing
-    if (!lmsLicenseId) {
-      console.error("⚠️⚠️⚠️ CRITICAL WARNING ⚠️⚠️⚠️");
-      console.error("lmsLicenseId (MongoDB _id) not provided!");
-      console.error("Heartbeat syncing will NOT work without this!");
-      console.error("Your LMS webhook MUST send the license._id field");
-    }
+    if (!purchaseId) {
+  console.error("⚠️ CRITICAL: purchaseId missing — cannot sync license!");
+}
+
 
     // Extract email domain from admin email
     let emailDomain = null;
@@ -174,7 +177,7 @@ export const handleLicensePurchase = async (req, res) => {
       [
         company.id,
         licenseKey,
-        lmsLicenseId,
+        effectiveLmsLicenseId,
         planType || "Standard",
         maxUsers || 1,
         expiryDate ? new Date(expiryDate) : null,
@@ -229,7 +232,7 @@ export const handleLicensePurchase = async (req, res) => {
       [
         company.id,
         lmsUserId || email,
-        lmsLicenseId,
+        effectiveLmsLicenseId,
         transactionType,
         licenseKey,
         planType || 'Standard',
